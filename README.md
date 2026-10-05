@@ -21,7 +21,9 @@ docker build -f Dockerfile.octane -t once-campfire-laravel-octane .
 docker run --rm -p 8000:8000 -e SECRET_KEY_BASE="$(openssl rand -hex 64)" -v campfire-octane:/app/storage once-campfire-laravel-octane
 ```
 
-The entrypoint installs the schema, runs `php artisan optimize`, then `php artisan octane:start --server=frankenphp --host=0.0.0.0 --port=8000 --workers=4 --max-requests=0`. `APP_ENV=production` and `APP_DEBUG=false`. Mount existing storage at `/app/storage`.
+The entrypoint installs the schema and runs `php artisan optimize`. It then starts the same background processes as `bin/start`: `php artisan queue:work --sleep=1 --tries=3 --timeout=30` and `php bin/cable`. Octane serves HTTP with `php artisan octane:start --server=frankenphp --host=0.0.0.0 --port=$HTTP_PORT --workers=4 --max-requests=0` (`HTTP_PORT` defaults to 8000). The image installs `libvips-tools` and `ffmpeg`, the same media CLIs as the stock Dockerfile. `APP_ENV=production` and `APP_DEBUG=false`. Mount existing storage at `/app/storage`.
+
+`bin/cable` listens on `127.0.0.1:$CABLE_PORT`. `CABLE_PORT` defaults to `HTTP_PORT + 1000`. The layout connects to `/cable`. This image keeps Octane's default FrankenPHP server and ships no Caddyfile. A proxy that can reach that loopback listener — the role `deploy/nginx.conf` plays in the stock image — must forward WebSocket `/cable` with `Upgrade`, `Connection`, `Host`, `X-Forwarded-Proto`, and `Origin`.
 
 Run the PHPUnit suite with `composer test` inside the pinned PHP image; native media tests require libvips. Compatibility and independent verification evidence lives in `plans/contracts.json`. Verification includes 26 independent browser assertions, actual Rails cookie continuity and live WebSocket privacy checks. Remaining checks are listed in the ledger.
 

@@ -1,4 +1,8 @@
 FROM dunglas/frankenphp:php8.4-bookworm
+# Stock Dockerfile installs these CLIs. Media::variant() calls `vips thumbnail`
+# and `ffmpeg` for video; BlobStorage::attach() calls `ffprobe` for audio/video.
+RUN apt-get update && apt-get install -y --no-install-recommends libvips-tools ffmpeg \
+ && rm -rf /var/lib/apt/lists/*
 # Extensions the app needs (idempotent if already present)
 RUN install-php-extensions pdo_sqlite mbstring dom curl zip pcntl sockets opcache bcmath \
  || (sleep 5 && install-php-extensions pdo_sqlite mbstring dom curl zip pcntl sockets opcache bcmath)
@@ -16,12 +20,8 @@ RUN printf '%s\n' \
   'opcache.jit_buffer_size=64M' \
   > /usr/local/etc/php/conf.d/zz-production.ini
 ENV COMPOSER_ALLOW_SUPERUSER=1
+# Install the locked tree only. laravel/octane is already in composer.json/composer.lock.
 RUN composer install --no-dev --classmap-authoritative --no-interaction --no-ansi \
- && composer require laravel/octane --no-interaction --no-ansi \
- && php -r 'file_put_contents(".env","APP_KEY=base64:".base64_encode(random_bytes(32))."\nAPP_ENV=production\nAPP_DEBUG=false\nSECRET_KEY_BASE=build\n");' \
- && php artisan octane:install --server=frankenphp --no-interaction \
- && composer install --no-dev --classmap-authoritative --no-interaction --no-ansi \
- && rm -f .env \
  && mkdir -p storage/framework/cache/data storage/framework/cache/HTML storage/framework/sessions storage/framework/views storage/logs storage/db storage/files \
  && chown -R www-data:www-data storage bootstrap/cache \
  && frankenphp version \
