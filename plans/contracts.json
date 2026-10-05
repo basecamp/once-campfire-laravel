@@ -94,8 +94,8 @@
       "evidence": "Independent real-browser workflows: compose, mention, pagination/edit/delete, boost, image upload/lightbox, search, private/direct rooms; administration and first-run setup. 26 assertions passed, no JS errors."
     },
     "benchmarks": {
-      "status": "pending",
-      "evidence": "Earlier matched production HTTP runs predate fragment caching, Rails SQLite pragmas, and the optional FrankenPHP Octane image. Those requests/second are not measurements of this tree until the same workloads are rerun."
+      "status": "verified",
+      "evidence": "Re-run 2026-10-05 PT on this machine only: docker --cpus=4, wrk 4 threads / 16 connections, median of 3x15s, non-2xx=0. Stock nginx/PHP-FPM median req/s: Room 105.08, Messages 105.68, Sidebar 394.79, Search 54.50, Post 172.15. Octane 4 workers plus fragment cache: Room 481.74 (4.58x), Messages 622.53 (5.89x), Sidebar 685.47 (1.74x), Search 407.96 (7.49x), Post 229.48 (1.33x). Published README Ryzen numbers are different hardware."
     }
   },
   "verification": {
@@ -106,6 +106,6 @@
     "browser": "26 assertions passed without JavaScript errors: 10 core, 12 administration, 4 isolated fresh setup",
     "concurrent_native_writes": "Four independent PHP applications each create eight messages while holding membership reads 20ms: 32 messages and 32 FTS rows persisted. Independent production FPM 16-client write tests completed twice without failed requests.",
     "pending_socket_admission": "Real TCP regression covers pending admission, deadline and authenticated revocation. Independent production retest admits all 100 connections and delivers all 30 paced messages to every socket in both fresh runs.",
-    "benchmark_provenance": "Previous HTTP runtime 112a66f and socket runtime 87b332b. This tree fragment-caches message and boost HTML and sets Rails SQLite pragmas. Dockerfile.octane is an optional FrankenPHP Octane path with no custom Caddyfile. Rerun HTTP benchmarks before quoting requests/second for this tree."
+    "benchmark_provenance": "Re-run 2026-10-05 PT after fragment caching, Rails SQLite pragmas, and optional Dockerfile.octane. Same machine, docker --cpus=4, wrk 4 threads / 16 connections, median of 3x15s, non-2xx=0. Published README figures remain the Ryzen AI MAX+ 395 baseline and are not this machine."
   }
 }
