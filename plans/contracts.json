@@ -94,18 +94,18 @@
       "evidence": "Independent real-browser workflows: compose, mention, pagination/edit/delete, boost, image upload/lightbox, search, private/direct rooms; administration and first-run setup. 26 assertions passed, no JS errors."
     },
     "benchmarks": {
-      "status": "verified",
-      "evidence": "Matched production HTTP runs against Ruby and Django: identical ordered windows, successful persisted body-bearing writes, FTS and SQLite integrity. Real resized JPEGs verified. Two paced runs admit all 100 sockets and fully deliver all 30 messages; no capacity limit inferred. Raw outputs remain ignored."
+      "status": "pending",
+      "evidence": "Earlier matched production HTTP runs predate fragment caching, Rails SQLite pragmas, and the optional FrankenPHP Octane image. Those requests/second are not measurements of this tree until the same workloads are rerun."
     }
   },
   "verification": {
-    "phpunit": "25 tests, 509 assertions; production PHP 8.4.26 image with libvips",
+    "phpunit": "25 tests, 509 assertions on PHP 8.4.26 with libvips after fragment caching, Rails SQLite pragmas, and Octane were added. Same count as the earlier production-image run.",
     "independent_http": "18 checks passed",
     "independent_cable_security": "3 checks passed",
     "claude": "Requirements/architecture reviewed; source export blocked by automatic approval review.",
     "browser": "26 assertions passed without JavaScript errors: 10 core, 12 administration, 4 isolated fresh setup",
     "concurrent_native_writes": "Four independent PHP applications each create eight messages while holding membership reads 20ms: 32 messages and 32 FTS rows persisted. Independent production FPM 16-client write tests completed twice without failed requests.",
     "pending_socket_admission": "Real TCP regression covers pending admission, deadline and authenticated revocation. Independent production retest admits all 100 connections and delivers all 30 paced messages to every socket in both fresh runs.",
-    "benchmark_provenance": "HTTP runtime 112a66f; socket runtime 87b332b. Diff contains only socket admission code, its tests and ledger; all measured HTTP paths unchanged. Production image runtime hashes independently verified."
+    "benchmark_provenance": "Previous HTTP runtime 112a66f and socket runtime 87b332b. This tree fragment-caches message and boost HTML and sets Rails SQLite pragmas. Dockerfile.octane is an optional FrankenPHP Octane path with no custom Caddyfile. Rerun HTTP benchmarks before quoting requests/second for this tree."
   }
 }

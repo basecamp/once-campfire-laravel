@@ -13,6 +13,7 @@
         "bacon/bacon-qr-code": "^3.0",
         "ezyang/htmlpurifier": "^4.18",
         "laravel/framework": "^13.0",
+        "laravel/octane": "^2.20",
         "minishlink/web-push": "^10.0",
         "workerman/workerman": "^5.1"
     },

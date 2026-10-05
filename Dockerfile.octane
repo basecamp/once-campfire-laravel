@@ -1,0 +1,35 @@
+FROM dunglas/frankenphp:php8.4-bookworm
+# Extensions the app needs (idempotent if already present)
+RUN install-php-extensions pdo_sqlite mbstring dom curl zip pcntl sockets opcache bcmath \
+ || (sleep 5 && install-php-extensions pdo_sqlite mbstring dom curl zip pcntl sockets opcache bcmath)
+COPY --from=composer:2.8 /usr/bin/composer /usr/local/bin/composer
+WORKDIR /app
+COPY . /app
+# Production opcache/JIT
+RUN printf '%s\n' \
+  'opcache.enable=1' \
+  'opcache.enable_cli=1' \
+  'opcache.validate_timestamps=0' \
+  'opcache.memory_consumption=192' \
+  'opcache.max_accelerated_files=20000' \
+  'opcache.jit=tracing' \
+  'opcache.jit_buffer_size=64M' \
+  > /usr/local/etc/php/conf.d/zz-production.ini
+ENV COMPOSER_ALLOW_SUPERUSER=1
+RUN composer install --no-dev --classmap-authoritative --no-interaction --no-ansi \
+ && composer require laravel/octane --no-interaction --no-ansi \
+ && php -r 'file_put_contents(".env","APP_KEY=base64:".base64_encode(random_bytes(32))."\nAPP_ENV=production\nAPP_DEBUG=false\nSECRET_KEY_BASE=build\n");' \
+ && php artisan octane:install --server=frankenphp --no-interaction \
+ && composer install --no-dev --classmap-authoritative --no-interaction --no-ansi \
+ && rm -f .env \
+ && mkdir -p storage/framework/cache/data storage/framework/cache/HTML storage/framework/sessions storage/framework/views storage/logs storage/db storage/files \
+ && chown -R www-data:www-data storage bootstrap/cache \
+ && frankenphp version \
+ && composer show laravel/octane | head -3 \
+ && php -i | grep -E 'opcache\.(enable|jit)' | head -10
+COPY deploy/start-octane.sh /usr/local/bin/start-octane.sh
+RUN chmod +x /usr/local/bin/start-octane.sh \
+ && sed -i 's|/rails|/app|g' /usr/local/bin/start-octane.sh
+# Ensure PATH has frankenphp (official image already does)
+ENTRYPOINT ["/usr/local/bin/start-octane.sh"]
+EXPOSE 8000

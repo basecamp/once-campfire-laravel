@@ -8,14 +8,28 @@ docker build -t once-campfire-laravel .
 docker run --rm -p 8080:80 -e SECRET_KEY_BASE="$(openssl rand -hex 64)" -v campfire:/rails/storage once-campfire-laravel
 ```
 
-Existing installs must reuse their `SECRET_KEY_BASE`, preserve `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY` for existing push subscriptions, and mount existing storage at `/rails/storage`. The image runs nginx with gzip, eight PHP-FPM workers, an asynchronous SQLite-backed queue worker and native Action Cable. `HTTP_PORT` changes the listening port.
+Existing installs must reuse their `SECRET_KEY_BASE`, preserve `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY` for existing push subscriptions, and mount existing storage at `/rails/storage`. The image runs nginx with gzip, eight PHP-FPM workers, an asynchronous SQLite-backed queue worker and native Action Cable. `HTTP_PORT` changes the listening port. This stock image is the default benchmark path.
+
+Message and boost HTML is fragment-cached (`message:{id}:{updated_at}:presentation-v3`, `boost:{id}:{updated_at}`). A hit still splices the current CSRF token into the eight quick-boost forms and does not store presentation HTML in SQLite. The sqlite connection uses WAL, `synchronous=NORMAL`, a 2000-page cache, a 64MB journal limit and a 128MB mmap, with `BEGIN IMMEDIATE`. `busy_timeout` stays 10000.
+
+## Octane / FrankenPHP
+
+`Dockerfile.octane` is an optional production image. It does not replace the stock Dockerfile and does not add a Caddyfile.
+
+```sh
+docker build -f Dockerfile.octane -t once-campfire-laravel-octane .
+docker run --rm -p 8000:8000 -e SECRET_KEY_BASE="$(openssl rand -hex 64)" -v campfire-octane:/app/storage once-campfire-laravel-octane
+```
+
+The entrypoint installs the schema, runs `php artisan optimize`, then `php artisan octane:start --server=frankenphp --host=0.0.0.0 --port=8000 --workers=4 --max-requests=0`. `APP_ENV=production` and `APP_DEBUG=false`. Mount existing storage at `/app/storage`.
 
 Run the PHPUnit suite with `composer test` inside the pinned PHP image; native media tests require libvips. Compatibility and independent verification evidence lives in `plans/contracts.json`. Verification includes 26 independent browser assertions, actual Rails cookie continuity and live WebSocket privacy checks. Remaining checks are listed in the ledger.
 
 ## Benchmarks
 
 Measured with 16 concurrent clients on an AMD Ryzen AI MAX+ 395,
-with four hardware threads allocated to each app.
+with four hardware threads allocated to each app. These published figures
+predate fragment caching and the optional Octane image.
 
 | Requests/second | Rails | Django | Laravel |
 |---|---:|---:|---:|

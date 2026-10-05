@@ -40,9 +40,14 @@ return [
             'prefix' => '',
             'foreign_key_constraints' => env('DB_FOREIGN_KEYS', true),
             'busy_timeout' => 10000,
-            'journal_mode' => null,
-            'synchronous' => null,
+            'journal_mode' => 'wal',
+            'synchronous' => 'normal',
             'transaction_mode' => 'IMMEDIATE',
+            'pragmas' => [
+                'cache_size' => 2000,
+                'journal_size_limit' => 67108864,
+                'mmap_size' => 134217728,
+            ],
         ],
 
         'mysql' => [

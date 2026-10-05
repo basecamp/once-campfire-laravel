@@ -6,6 +6,8 @@ use App\Support\RichTextRenderer;
 
 final class Message extends Record
 {
+    protected $touches = ['room'];
+
     public function creator()
     {
         return $this->belongsTo(User::class, 'creator_id');
@@ -33,7 +35,7 @@ final class Message extends Record
 
     public function scopePresentation($q)
     {
-        return $q->with(['creator', 'room.users', 'richText', 'boosts.booster', 'attachment.blob']);
+        return $q->with(['creator', 'richText', 'attachment.blob.variantRecords', 'boosts.booster', 'room']);
     }
 
     public function plainText(): string

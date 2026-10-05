@@ -29,3 +29,7 @@ Thumbs.db
 /storage/vapid.json
 /storage/events.log
 /storage/cable.pid
+
+**/caddy
+frankenphp
+frankenphp-worker.php
