@@ -12,7 +12,7 @@ use Throwable;
  * most of their time asleep while the database sits idle. A blocking `flock` wakes the next writer
  * the moment the previous one commits. Readers never take the lock; WAL keeps them concurrent.
  */
-final class WriteLockingPdo extends PDO
+final class WriteLockingPdo extends PDO implements LocksWrites
 {
     /** @var resource|false|null */
     private $handle = null;

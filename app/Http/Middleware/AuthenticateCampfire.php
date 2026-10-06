@@ -3,6 +3,7 @@
 namespace App\Http\Middleware;
 
 use App\Models\User;
+use App\Support\HotCache;
 use App\Support\RailsCrypto;
 use Closure;
 use Illuminate\Http\Request;
@@ -25,9 +26,21 @@ final class AuthenticateCampfire
         }
         $crypto = app(RailsCrypto::class);
         $token = $crypto->verifyCookie('session_token', $request->cookie('session_token'));
-        $row = is_string($token)
-            ? DB::selectOne('SELECT s.id AS campfire_session_id, s.last_active_at AS campfire_last_active_at, u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ? AND u.status = 0 LIMIT 1', [$token])
-            : null;
+        $row = null;
+        $cacheKey = null;
+        if (is_string($token)) {
+            // Opt 4: APCu-cache the auth join row per session token (short TTL).
+            $cacheKey = 'auth:'.hash('xxh128', $token);
+            $cached = HotCache::get($cacheKey);
+            if (is_array($cached)) {
+                $row = (object) $cached;
+            } else {
+                $row = DB::selectOne('SELECT s.id AS campfire_session_id, s.last_active_at AS campfire_last_active_at, u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ? AND u.status = 0 LIMIT 1', [$token]);
+                if ($row) {
+                    HotCache::put($cacheKey, (array) $row, 300);
+                }
+            }
+        }
         if (! $row) {
             $request->session()->put('return_to', $request->getRequestUri());
 
@@ -42,10 +55,16 @@ final class AuthenticateCampfire
             abort(403);
         }
         $request->attributes->set('campfire_user', $user);
+        $request->attributes->set('campfire_session_id', $sessionId);
         view()->share('currentUser', $user);
         $request->setUserResolver(fn () => $user);
-        if (strtotime($lastActive) < time() - 3600) {
-            DB::table('sessions')->where('id', $sessionId)->update(['last_active_at' => now(), 'updated_at' => now(), 'user_agent' => $request->userAgent(), 'ip_address' => $request->ip()]);
+        if (strtotime((string) $lastActive) < time() - 3600) {
+            $now = now();
+            DB::table('sessions')->where('id', $sessionId)->update(['last_active_at' => $now, 'updated_at' => $now, 'user_agent' => $request->userAgent(), 'ip_address' => $request->ip()]);
+            if ($cacheKey) {
+                $fresh = $row + ['campfire_session_id' => $sessionId, 'campfire_last_active_at' => (string) $now];
+                HotCache::put($cacheKey, $fresh, 300);
+            }
         }
 
         return $next($request);

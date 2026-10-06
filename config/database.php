@@ -37,12 +37,12 @@ return [
             'prefix' => '',
             'foreign_key_constraints' => true,
             'busy_timeout' => 10000,
-            'journal_mode' => null,
+            'journal_mode' => 'WAL',
             'synchronous' => 'NORMAL',
             'transaction_mode' => 'IMMEDIATE',
         ],
 
-        // Matches the Rails 8 SQLite adapter defaults; NORMAL sync is crash-safe under WAL, which install enables.
+        // WAL with durable NORMAL sync. HTTP responses unchanged.
         'sqlite' => [
             'driver' => 'sqlite',
             'url' => env('DB_URL'),
@@ -50,13 +50,15 @@ return [
             'prefix' => '',
             'foreign_key_constraints' => env('DB_FOREIGN_KEYS', true),
             'busy_timeout' => 10000,
-            'journal_mode' => null,
+            'journal_mode' => 'WAL',
             'synchronous' => 'NORMAL',
             'transaction_mode' => 'IMMEDIATE',
             'pragmas' => [
-                'mmap_size' => 134217728,
-                'journal_size_limit' => 67108864,
-                'cache_size' => 2000,
+                'mmap_size' => 268435456,
+                'journal_size_limit' => 134217728,
+                'cache_size' => -131072,
+                'temp_store' => 'MEMORY',
+                'wal_autocheckpoint' => 10000,
             ],
         ],
 
@@ -74,7 +76,6 @@ return [
             'prefix' => '',
             'prefix_indexes' => true,
             'strict' => true,
-            'engine' => null,
             'options' => extension_loaded('pdo_mysql') ? array_filter([
                 (PHP_VERSION_ID >= 80500 ? Mysql::ATTR_SSL_CA : PDO::MYSQL_ATTR_SSL_CA) => env('MYSQL_ATTR_SSL_CA'),
             ]) : [],
@@ -94,7 +95,6 @@ return [
             'prefix' => '',
             'prefix_indexes' => true,
             'strict' => true,
-            'engine' => null,
             'options' => extension_loaded('pdo_mysql') ? array_filter([
                 (PHP_VERSION_ID >= 80500 ? Mysql::ATTR_SSL_CA : PDO::MYSQL_ATTR_SSL_CA) => env('MYSQL_ATTR_SSL_CA'),
             ]) : [],

@@ -13,8 +13,9 @@ use Illuminate\Support\Facades\Cache;
  *
  * Keys carry the message and creator versions, so edits, boosts and profile changes write new
  * fragments instead of invalidating old ones. Mentioned users and room names may lag behind a
- * rename until the message changes, exactly as in Rails. CSRF tokens never enter the cache:
- * fragments are stored split around the renderer's token and joined with the viewer's.
+ * rename until the message changes, exactly as in Rails. CSRF tokens never enter the shared
+ * fragment cache: fragments are stored split around the renderer's token and joined with the
+ * viewer's. Opt 5 additionally keeps a per-session already-spliced copy so warm hits skip implode.
  */
 final class MessageFragments
 {
@@ -35,6 +36,17 @@ final class MessageFragments
      */
     public function block(string $version, Closure $load, ?string $token = null): string
     {
+        $token ??= (string) csrf_token();
+        $sessionId = request()?->attributes->get('campfire_session_id');
+        // Opt 5: per-session already-CSRF-spliced HTML (no cross-session token leak).
+        if ($sessionId !== null && $sessionId !== '') {
+            $splicedKey = 'spliced:'.self::VERSION.':'.hash('xxh128', $sessionId.'|'.url('/').'|'.$version.'|'.$token);
+            $hit = HotCache::get($splicedKey);
+            if (is_string($hit)) {
+                return $hit;
+            }
+        }
+
         $key = 'block:'.self::VERSION.':'.hash('xxh128', url('/').'|'.$version);
         $cache = $this->cache();
         $parts = $cache->get($key);
@@ -44,7 +56,12 @@ final class MessageFragments
             $cache->put($key, $parts, self::BLOCK_TTL);
         }
 
-        return implode($token ?? (string) csrf_token(), $parts);
+        $html = implode($token, $parts);
+        if ($sessionId !== null && $sessionId !== '') {
+            HotCache::put($splicedKey, $html, self::BLOCK_TTL);
+        }
+
+        return $html;
     }
 
     /**
@@ -57,10 +74,44 @@ final class MessageFragments
     }
 
     /**
+     * One Blade/cache pass: broadcast HTML (empty CSRF) + viewer HTML (session token).
+     * Avoids a second fragment implode/Blade path on POST create.
+     *
+     * @param  iterable<Message>  $messages
+     * @return array{0: string, 1: string} [broadcastHtml, viewerHtml]
+     */
+    public function renderPair(iterable $messages, ?string $viewerToken = null): array
+    {
+        $viewerToken ??= (string) csrf_token();
+        $partsList = $this->parts($messages);
+        $broadcast = '';
+        $viewer = '';
+        foreach ($partsList as $parts) {
+            $broadcast .= implode('', $parts);
+            $viewer .= implode($viewerToken, $parts);
+        }
+
+        return [$broadcast, $viewer];
+    }
+
+    /**
      * @param  iterable<Message>  $messages
      * @return list<string> HTML for each message, in order.
      */
     public function each(iterable $messages, ?string $token = null): array
+    {
+        $token ??= (string) csrf_token();
+
+        return array_map(fn (array $parts) => implode($token, $parts), $this->parts($messages));
+    }
+
+    /**
+     * Resolve fragment parts (cache hit or one Blade render). No token implode.
+     *
+     * @param  iterable<Message>  $messages
+     * @return list<list<string>>
+     */
+    private function parts(iterable $messages): array
     {
         $messages = Collection::make($messages)->values()->loadMissing(['creator', 'room']);
         if ($messages->isEmpty()) {
@@ -85,9 +136,7 @@ final class MessageFragments
             $this->cache()->putMany($fresh, self::TTL);
         }
 
-        $token ??= (string) csrf_token();
-
-        return array_map(fn (string $key) => implode($token, $fragments[$key]), $keys);
+        return array_map(fn (string $key) => $fragments[$key], $keys);
     }
 
     /**

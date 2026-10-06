@@ -12,6 +12,9 @@ final class Broadcasts
     /**
      * Append events to the cable outbox in a single locked write.
      *
+     * Opt 6: during HTTP requests, buffer lines and flock/write after the response is flushed
+     * (terminating), so POST latency does not include the events.log lock.
+     *
      * @param  list<array{0: string, 1: mixed}>  $events
      */
     public function publishMany(array $events): void
@@ -24,6 +27,28 @@ final class Broadcasts
             return;
         }
 
+        if (! app()->runningInConsole() && app()->bound('request') && ($request = request())) {
+            $pending = (string) $request->attributes->get('_broadcast_pending', '');
+            $request->attributes->set('_broadcast_pending', $pending.$lines);
+            if (! $request->attributes->get('_broadcast_scheduled')) {
+                $request->attributes->set('_broadcast_scheduled', true);
+                app()->terminating(function () use ($request) {
+                    $buffered = (string) $request->attributes->get('_broadcast_pending', '');
+                    $request->attributes->set('_broadcast_pending', '');
+                    if ($buffered !== '') {
+                        $this->writeLines($buffered);
+                    }
+                });
+            }
+
+            return;
+        }
+
+        $this->writeLines($lines);
+    }
+
+    private function writeLines(string $lines): void
+    {
         $file = fopen(config('campfire.events'), 'ab');
         if (! $file) {
             throw new \RuntimeException('Cannot open broadcast outbox');

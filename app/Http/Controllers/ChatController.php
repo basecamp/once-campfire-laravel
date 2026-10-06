@@ -6,6 +6,7 @@ use App\Models\Message;
 use App\Models\Room;
 use App\Support\Broadcasts;
 use App\Support\ChatEvents;
+use App\Support\HotCache;
 use App\Support\MessageFragments;
 use App\Support\MessageWriter;
 use App\Support\RichTextRenderer;
@@ -36,13 +37,25 @@ final class ChatController extends Controller
                 ->push($anchor)
                 ->concat($room->messages()->where('created_at', '>', $at)->orderBy('created_at')->limit(self::PAGE)->get());
             $messagesHtml = $fragments->render($messages);
+            $html = view('rooms.show', compact('room', 'messagesHtml'))->render();
         } else {
             $version = $this->pageVersion($room->id);
-            $messagesHtml = $version === null ? '' : $fragments->block('room:'.$room->id.':'.$version, fn () => $this->latest($room));
+            $generation = $room->id.'|'.$version.'|'.$room->getRawOriginal('updated_at');
+            // Opt 4: per-session room shell — on hit skip rebuilding messagesHtml.
+            $html = $this->cachedShell($r, 'room', $generation, function () use ($fragments, $room, $version) {
+                $messagesHtml = $version === null ? '' : $fragments->block('room:'.$room->id.':'.$version, fn () => $this->latest($room));
+
+                return view('rooms.show', compact('room', 'messagesHtml'))->render();
+            });
         }
 
-        return response()->view('rooms.show', compact('room', 'messagesHtml'))
-            ->withCookie(cookie('last_room', (string) $room->id, 60 * 24 * 365 * 20));
+        $response = response($html);
+        // Opt 3: skip rewriting last_room when the request already has this room id.
+        if ((string) $r->cookie('last_room') !== (string) $room->id) {
+            $response->withCookie(cookie('last_room', (string) $room->id, 60 * 24 * 365 * 20));
+        }
+
+        return $response;
     }
 
     public function messages(Request $r, int $room)
@@ -99,25 +112,47 @@ final class ChatController extends Controller
     }
 
     /**
-     * Identifies the exact content of a message page without hydrating it: the ids, versions and
-     * creator versions that key each message's fragment. Null when the page is empty.
+     * Identifies the exact content of a message page without hydrating it.
+     *
+     * Opt 2: on warm hits, skip the 40-row join — cache the fingerprint under a cheap
+     * APCu generation key (room.updated_at + global user generation + before cursor).
      */
     private function pageVersion(int $roomId, ?string $before = null): ?string
     {
+        $roomUpdated = DB::scalar('SELECT updated_at FROM rooms WHERE id = ?', [$roomId]);
+        if ($roomUpdated === null) {
+            return null;
+        }
+        $userGen = $this->userGeneration();
+        $genKey = 'pvgen:'.$roomId.':'.($before ?? '').':'.$roomUpdated.':'.$userGen;
+        $cached = HotCache::get($genKey);
+        if ($cached !== null) {
+            return $cached === '' ? null : $cached;
+        }
+
         $rows = DB::select(
             'SELECT m.id, m.updated_at, u.updated_at AS creator_updated_at FROM messages m LEFT JOIN users u ON u.id = m.creator_id WHERE m.room_id = ?'
             .($before !== null ? ' AND m.created_at < ?' : '').' ORDER BY m.created_at DESC LIMIT '.self::PAGE,
             $before !== null ? [$roomId, $before] : [$roomId]
         );
         if ($rows === []) {
+            HotCache::put($genKey, '', 3600);
+
             return null;
         }
         $version = '';
         foreach ($rows as $row) {
             $version .= $row->id.'|'.$row->updated_at.'|'.$row->creator_updated_at.';';
         }
+        HotCache::put($genKey, $version, 3600);
 
         return $version;
+    }
+
+    /** Cheap, APCu-memoized MAX(users.updated_at) used as a global creator-version generation. */
+    private function userGeneration(): string
+    {
+        return (string) HotCache::remember('gen:users', 30, fn () => (string) DB::scalar('SELECT MAX(updated_at) FROM users'));
     }
 
     public function show(Request $r, int $room, int $id)
@@ -149,13 +184,15 @@ final class ChatController extends Controller
         }
 
         $m = app(MessageWriter::class)->create($room, $r->user(), $attributes, true);
-        app(ChatEvents::class)->created($m);
+        // Opt 12: one Blade/cache pass → broadcast (empty CSRF) + viewer HTML (no second Blade).
+        [$broadcastHtml, $html] = app(MessageFragments::class)->renderPair([$m]);
+        app(ChatEvents::class)->created($m, $broadcastHtml);
 
         if ($r->expectsJson()) {
             return response()->json($this->json($m->loadMissing(Message::PRESENTATION)), 201);
         }
 
-        return response($this->stream('append', 'messages_room_'.$room->id, app(MessageFragments::class)->render([$m])))
+        return response($this->stream('append', 'messages_room_'.$room->id, $html))
             ->header('Content-Type', 'text/vnd.turbo-stream.html; charset=utf-8');
     }
 
@@ -200,35 +237,70 @@ final class ChatController extends Controller
 
     public function sidebar(Request $r)
     {
-        [$directs, $shared] = $r->user()->sidebar();
+        $user = $r->user();
+        // Opt 4: APCu-cache sidebar HTML per user + cheap generation (no CSRF in this partial).
+        $gen = $this->sidebarGeneration($user->id);
+        $key = 'sidebar:'.$user->id.':'.$gen.':'.$this->userGeneration();
 
-        return view('users.sidebar', compact('directs', 'shared'));
+        $html = HotCache::remember($key, 3600, function () use ($user) {
+            [$directs, $shared] = $user->sidebar();
+
+            return view('users.sidebar', compact('directs', 'shared'))->render();
+        });
+
+        return response($html);
+    }
+
+    /** Cheap generation for sidebar: membership/room stamps + unread-bearing row count. */
+    private function sidebarGeneration(int $userId): string
+    {
+        $row = DB::selectOne(
+            "SELECT MAX(m.updated_at) AS mu, MAX(r.updated_at) AS ru, COUNT(*) AS c,
+                    SUM(CASE WHEN m.unread_at IS NULL THEN 0 ELSE 1 END) AS unread
+             FROM memberships m JOIN rooms r ON r.id = m.room_id
+             WHERE m.user_id = ? AND m.involvement != 'invisible'",
+            [$userId]
+        );
+
+        return ($row->mu ?? '').'|'.($row->ru ?? '').'|'.($row->c ?? 0).'|'.($row->unread ?? 0);
     }
 
     public function search(Request $r)
     {
         $query = preg_replace('/[^\p{L}\p{N}_]/u', ' ', $r->input('q', ''));
-        $messagesHtml = '';
+        $version = '';
         if (trim($query) !== '') {
             $user = $r->user();
-            // Rooms are touched by every message, boost and edit they contain, so the room versions plus
-            // the newest user change identify the result list without running the search.
-            $version = $query.'|'.DB::scalar('SELECT MAX(updated_at) FROM users').'|'.implode(',', array_map(
-                fn ($row) => $row->id.'@'.$row->updated_at,
-                DB::select('SELECT r.id, r.updated_at FROM rooms r JOIN memberships m ON m.room_id = r.id WHERE m.user_id = ? ORDER BY r.id', [$user->id])
-            ));
-            $messagesHtml = app(MessageFragments::class)->block('search:'.$version, fn () => Message::query()
-                ->join('message_search_index as idx', 'messages.id', '=', 'idx.rowid')
-                ->whereRaw('idx.body MATCH ?', [$query])
-                ->whereIn('room_id', $user->rooms()->select('rooms.id'))
-                ->select('messages.*')
-                ->orderByDesc('messages.created_at')
-                ->limit(100)
-                ->get()
-                ->reverse());
+            // Opt 2: cheap search generation — one aggregate instead of fetching every room row.
+            $userGen = $this->userGeneration();
+            $row = DB::selectOne(
+                'SELECT MAX(r.updated_at) AS ru, MAX(m.updated_at) AS mu, COUNT(*) AS c
+                 FROM rooms r JOIN memberships m ON m.room_id = r.id WHERE m.user_id = ?',
+                [$user->id]
+            );
+            $roomsGen = ($row->ru ?? '').'|'.($row->mu ?? '').'|'.($row->c ?? 0);
+            $version = $query.'|'.$userGen.'|'.$roomsGen;
         }
 
-        return view('searches.index', compact('query', 'messagesHtml'));
+        // Opt 4: per-session search shell — on hit skip search block rebuild.
+        $html = $this->cachedShell($r, 'search', $version.'|'.$query, function () use ($query, $version) {
+            $messagesHtml = '';
+            if ($version !== '') {
+                $messagesHtml = app(MessageFragments::class)->block('search:'.$version, fn () => Message::query()
+                    ->join('message_search_index as idx', 'messages.id', '=', 'idx.rowid')
+                    ->whereRaw('idx.body MATCH ?', [$query])
+                    ->whereIn('room_id', request()->user()->rooms()->select('rooms.id'))
+                    ->select('messages.*')
+                    ->orderByDesc('messages.created_at')
+                    ->limit(100)
+                    ->get()
+                    ->reverse());
+            }
+
+            return view('searches.index', compact('query', 'messagesHtml'))->render();
+        });
+
+        return response($html);
     }
 
     public function recordSearch(Request $r)
@@ -270,7 +342,11 @@ final class ChatController extends Controller
         $row = DB::selectOne('SELECT r.* FROM rooms r JOIN memberships m ON m.room_id = r.id WHERE m.user_id = ? AND r.id = ? LIMIT 1', [$r->user()->id, $id]);
         abort_if($row === null, 404);
 
-        return (new Room)->newFromBuilder((array) $row);
+        $room = (new Room)->newFromBuilder((array) $row);
+        // Opt 8: MessageWriter can skip a second membership EXISTS inside the write lock.
+        $room->setAttribute('_membership_ok', true);
+
+        return $room;
     }
 
     public function json(Message $m): array
@@ -288,5 +364,23 @@ final class ChatController extends Controller
     public function stream(string $action, string $target, string $html): string
     {
         return '<turbo-stream action="'.e($action).'" target="'.e($target).'"><template>'.$html.'</template></turbo-stream>';
+    }
+
+    /**
+     * Opt 4: cache fully rendered HTML shells per session + generation.
+     * CSRF tokens in the shell belong to this session only — never share across sessions.
+     *
+     * @param  callable(): string  $render
+     */
+    private function cachedShell(Request $r, string $kind, string $generation, callable $render): string
+    {
+        $sessionId = $r->attributes->get('campfire_session_id');
+        if ($sessionId === null || $sessionId === '') {
+            return $render();
+        }
+        $token = (string) csrf_token();
+        $key = 'shell:'.$kind.':'.hash('xxh128', $sessionId.'|'.$token.'|'.$generation.'|'.url('/'));
+
+        return HotCache::remember($key, 3600, $render);
     }
 }

@@ -24,7 +24,7 @@ final class SQLiteConnection extends BaseConnection
     private function serialized(callable $write): mixed
     {
         $pdo = $this->transactions === 0 ? $this->getPdo() : null;
-        if (! $pdo instanceof WriteLockingPdo || ! $pdo->lock()) {
+        if (! $pdo instanceof LocksWrites || ! $pdo->lock()) {
             return $write();
         }
         try {

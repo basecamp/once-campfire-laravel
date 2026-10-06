@@ -12,7 +12,7 @@ final class SQLiteConnector extends BaseConnector
     public function connect(array $config)
     {
         $pdo = parent::connect($config);
-        if ($pdo instanceof WriteLockingPdo) {
+        if ($pdo instanceof LocksWrites) {
             $pdo->lockOn(self::lockPath($config['database'] ?? ''));
         }
 
