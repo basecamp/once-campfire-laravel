@@ -27,6 +27,10 @@ with four hardware threads allocated to each app.
 
 ## Known differences
 
+- The direct-room list and New Ping picker share a nested Turbo frame, keeping the
+  surrounding sidebar attached while editing. Background refreshes preserve an open
+  New Ping form and selected recipients.
+
 - Sidebar connection refresh waits for the current Turbo frame to finish loading,
   preventing an aborted response on startup or reconnect. Obsolete connections and removed frames do not reload.
 

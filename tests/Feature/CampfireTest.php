@@ -479,11 +479,23 @@ PHP;
     public function test_sidebar_is_a_complete_page_for_the_current_viewer(): void
     {
         [$user] = $this->fixture();
+        $other = User::create(['name' => 'Other participant', 'role' => 0, 'status' => 0]);
+        $direct = Room::create(['type' => 'Rooms::Direct', 'creator_id' => $user->id]);
+        Membership::create(['room_id' => $direct->id, 'user_id' => $user->id]);
+        Membership::create(['room_id' => $direct->id, 'user_id' => $other->id]);
         $this->auth($user);
         $response = $this->get('/users/me/sidebar')->assertOk();
         $response->assertSee('<!DOCTYPE html>', false);
         $response->assertSee('name="current-user-id" content="'.$user->id.'"', false);
         $response->assertSee('id="user_sidebar"', false);
         $response->assertSee('</html>', false);
+
+        $document = new \DOMDocument;
+        $document->loadHTML($response->getContent(), LIBXML_NOERROR | LIBXML_NOWARNING);
+        $xpath = new \DOMXPath($document);
+        $this->assertSame(1, $xpath->query('//*[@id="user_sidebar"]//turbo-frame[@id="direct_rooms_control" and @target="_top"]')->length);
+        $this->assertSame(1, $xpath->query('//*[@id="direct_rooms_control"]//a[@href="/rooms/directs/new" and @data-turbo-frame="direct_rooms_control"]')->length);
+        $this->assertSame(1, $xpath->query('//*[@id="direct_rooms_control"]//*[@id="direct_rooms"]//a[@id="list_room_'.$direct->id.'"]')->length);
+        $this->assertSame(0, $xpath->query('//*[@id="direct_rooms_control"]//*[@id="shared_rooms"]')->length);
     }
 }
