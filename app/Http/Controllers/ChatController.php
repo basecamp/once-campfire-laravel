@@ -126,7 +126,7 @@ final class ChatController extends Controller
         $query = preg_replace('/[^\p{L}\p{N}_]/u', ' ', $r->input('q', ''));
         $messages = collect();
         if (trim($query) !== '') {
-            $messages = Message::query()->join('message_search_index as idx', 'messages.id', '=', 'idx.rowid')->whereRaw('idx.body MATCH ?', [$query])->whereIn('room_id', $r->user()->rooms()->select('rooms.id'))->select('messages.*')->orderByDesc('messages.created_at')->limit(100)->get()->reverse();
+            $messages = Message::searchFor($r->user(), $query);
         }
 
         return view('searches.index', compact('query', 'messages'));
@@ -152,7 +152,7 @@ final class ChatController extends Controller
         $room = $this->findRoom($r, $room);
         $since = CarbonImmutable::createFromTimestampMs((int) $r->input('since', 0));
         $new = $room->messages()->presentation()->where('created_at', '>', $since)->orderBy('created_at')->limit(40)->get();
-        $updated = $room->messages()->presentation()->whereNotIn('id', $new->pluck('id'))->where('updated_at', '>', $since)->orderByDesc('created_at')->limit(40)->get()->reverse();
+        $updated = $room->messages()->presentation()->whereNotIn('id', $new->pluck('id'))->where('updated_at', '>', $since)->orderByRaw('+messages.created_at DESC')->limit(40)->get()->reverse();
         $s = '';
         foreach ($new as $m) {
             $s .= $this->stream('append', 'messages_room_'.$room->id, view('messages.message', ['message' => $m])->render());

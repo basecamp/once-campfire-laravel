@@ -50,6 +50,25 @@ final class CampfireTest extends TestCase
         $this->withUnencryptedCookie('session_token', app(RailsCrypto::class)->signCookie('session_token', $token));
     }
 
+    public function test_search_reaches_sparse_memberships_and_quotes_literal_terms(): void
+    {
+        [$user, $room] = $this->fixture();
+        $visible = app(MessageWriter::class)->create($room, $user, ['body' => '<p>searchsparseonly</p>']);
+        $private = Room::create(['name' => 'Private', 'type' => 'Rooms::Closed', 'creator_id' => $user->id]);
+        DB::transaction(function () use ($private, $user) {
+            for ($i = 0; $i < 1100; $i++) {
+                $id = DB::table('messages')->insertGetId(['room_id' => $private->id, 'creator_id' => $user->id, 'client_message_id' => 'sparse-'.$i, 'created_at' => now(), 'updated_at' => now()]);
+                DB::insert('INSERT INTO message_search_index(rowid,body) VALUES (?,?)', [$id, 'searchsparseonly']);
+            }
+        });
+        $this->assertSame([$visible->id], Message::searchFor($user, 'searchsparseonly')->pluck('id')->all());
+        Membership::where('user_id', $user->id)->where('room_id', $room->id)->delete();
+        $this->assertCount(0, Message::searchFor($user, 'searchsparseonly'));
+        Membership::create(['user_id' => $user->id, 'room_id' => $private->id]);
+        $this->assertCount(100, Message::searchFor($user, 'searchsparseonly'));
+        $this->assertCount(0, Message::searchFor($user, 'searchsparseonly AND'));
+    }
+
     public function test_message_writes_index_room_unread_and_notifications_after_commit(): void
     {
         [$u,$room] = $this->fixture();

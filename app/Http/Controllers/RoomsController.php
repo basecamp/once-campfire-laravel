@@ -40,11 +40,14 @@ final class RoomsController extends Controller
         }
         $room = DB::transaction(function () use ($r, $type, $ids) {
             if ($type === 'Rooms::Direct') {
-                foreach (Room::where('type', $type)->with('users')->get() as $candidate) {
-                    $set = $candidate->users->pluck('id')->sort()->values()->all();
-                    if ($set === $ids) {
-                        return $candidate;
-                    }
+                $candidate = Room::query()->where('type', $type)
+                    ->whereIn('id', function ($query) use ($ids) {
+                        $query->select('room_id')->from('memberships')->groupBy('room_id')
+                            ->havingRaw('COUNT(*) = ?', [count($ids)])
+                            ->havingRaw('SUM(user_id IN (SELECT value FROM json_each(?))) = ?', [json_encode($ids), count($ids)]);
+                    })->orderBy('id')->first();
+                if ($candidate) {
+                    return $candidate;
                 }
             }
             $room = Room::create(['name' => $r->input('room.name', 'New room'), 'type' => $type, 'creator_id' => $r->user()->id]);

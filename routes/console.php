@@ -20,6 +20,7 @@ Artisan::command('campfire:install', function () {
         }
         DB::table('ar_internal_metadata')->insert(['key' => 'environment', 'value' => app()->environment(), 'created_at' => now(), 'updated_at' => now()]);
     }
+    DB::statement('CREATE INDEX IF NOT EXISTS index_messages_on_room_id_and_updated_at ON messages(room_id,updated_at)');
     DB::statement('PRAGMA journal_mode=WAL');
     DB::statement('PRAGMA busy_timeout=10000');
     $jobs = storage_path('jobs.sqlite3');
