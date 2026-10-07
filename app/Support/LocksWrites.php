@@ -13,4 +13,7 @@ interface LocksWrites
     public function lock(): bool;
 
     public function unlock(): void;
+
+    /** Releases a lock taken by BEGIN once SQLite has ended that transaction, by any means. */
+    public function releaseIfTransactionEnded(): void;
 }

@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Support\RailsCrypto;
 use Illuminate\Container\Container;
 use Illuminate\Database\Events\TransactionRolledBack;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Bootstrap\HandleExceptions;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Facade;
@@ -168,6 +169,19 @@ final class OctaneWorkerIsolationTest extends TestCase
         $this->assertSame(0, $connection->transactionLevel());
         $name = (new \PDO('sqlite:'.$this->dir.'/production.sqlite3'))->query('SELECT name FROM users WHERE id = '.$this->users['bob']['id'])->fetchColumn();
         $this->assertSame('Bob Brown', $name);
+        $this->assertWriterLockFree();
+
+        // Nor does one SQLite already ended itself leave the writer lock held: the transaction
+        // count cleanup finds nothing on the PDO to roll back.
+        (new \PDO('sqlite:'.$this->dir.'/production.sqlite3'))->exec('CREATE TABLE fixture_names (name TEXT UNIQUE ON CONFLICT ROLLBACK); INSERT INTO fixture_names VALUES (\'taken\')');
+        $connection->beginTransaction();
+        try {
+            $connection->table('fixture_names')->insert(['name' => 'taken']);
+            $this->fail('The duplicate should have thrown.');
+        } catch (QueryException) {
+        }
+        $this->request('GET', '/up');
+        $this->assertWriterLockFree();
 
         $cookies = ['session_token' => $this->sessionCookie($this->users['alice']['id'])];
         $events = $this->worker->application()->make('events');
@@ -218,6 +232,13 @@ final class OctaneWorkerIsolationTest extends TestCase
         $this->assertStringContainsString('<meta name="current-user-id" content="'.$user['id'].'">', $html);
         $this->assertStringContainsString('<meta name="current-user-name" content="'.e($user['name']).'">', $html);
         $this->assertSame(1, substr_count($html, 'name="current-user-id"'));
+    }
+
+    private function assertWriterLockFree(): void
+    {
+        $handle = fopen($this->dir.'/production.sqlite3.lock', 'c');
+        $this->assertTrue(flock($handle, LOCK_EX | LOCK_NB), 'The worker still holds the writer lock.');
+        fclose($handle);
     }
 
     private function assertNoCurrentUser(Response $response): void

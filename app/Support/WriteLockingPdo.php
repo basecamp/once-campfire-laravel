@@ -3,7 +3,6 @@
 namespace App\Support;
 
 use PDO;
-use Throwable;
 
 /**
  * Serializes this application's SQLite writers on a file lock.
@@ -21,6 +20,9 @@ final class WriteLockingPdo extends PDO implements LocksWrites
 
     private bool $held = false;
 
+    /** Taken by BEGIN: held until SQLite reports the transaction over, not just until a statement ends. */
+    private bool $heldForTransaction = false;
+
     public function lockOn(?string $path): void
     {
         $this->lockPath = $path;
@@ -28,33 +30,24 @@ final class WriteLockingPdo extends PDO implements LocksWrites
 
     public function beginTransaction(): bool
     {
-        $acquired = $this->lock();
+        $this->lockForTransaction();
         try {
             return parent::beginTransaction();
-        } catch (Throwable $exception) {
-            if ($acquired) {
-                $this->unlock();
-            }
-            throw $exception;
+        } finally {
+            $this->releaseIfTransactionEnded();
         }
     }
 
     public function exec(string $statement): int|false
     {
-        $acquired = preg_match('/^\s*BEGIN\b/i', $statement) === 1 && $this->lock();
+        if (preg_match('/^\s*BEGIN\b/i', $statement) === 1) {
+            $this->lockForTransaction();
+        }
         try {
-            $result = parent::exec($statement);
-        } catch (Throwable $exception) {
-            if ($acquired) {
-                $this->unlock();
-            }
-            throw $exception;
+            return parent::exec($statement);
+        } finally {
+            $this->releaseIfTransactionEnded();
         }
-        if ($acquired && $result === false) {
-            $this->unlock();
-        }
-
-        return $result;
     }
 
     public function commit(): bool
@@ -98,5 +91,25 @@ final class WriteLockingPdo extends PDO implements LocksWrites
             flock($this->handle, LOCK_UN);
         }
         $this->held = false;
+        $this->heldForTransaction = false;
+    }
+
+    /**
+     * SQLite ends a transaction itself when a statement fails under ON CONFLICT ROLLBACK,
+     * RAISE(ROLLBACK), SQLITE_FULL and the like. Laravel then never calls rollBack(): it only
+     * does while PDO still reports a transaction.
+     */
+    public function releaseIfTransactionEnded(): void
+    {
+        if ($this->heldForTransaction && ! parent::inTransaction()) {
+            $this->unlock();
+        }
+    }
+
+    private function lockForTransaction(): void
+    {
+        if ($this->lock()) {
+            $this->heldForTransaction = true;
+        }
     }
 }
