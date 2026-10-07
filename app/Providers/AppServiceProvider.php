@@ -5,6 +5,7 @@ namespace App\Providers;
 use App\Support\Assets;
 use App\Support\BlobStorage;
 use App\Support\RailsCrypto;
+use App\Support\ResponseCache;
 use App\Support\RichTextRenderer;
 use App\Support\SQLiteGrammar;
 use Illuminate\Database\Connection;
@@ -25,6 +26,7 @@ class AppServiceProvider extends ServiceProvider
         // Holds the files written by the current request's open transaction: one per request.
         $this->app->scoped(BlobStorage::class);
         $this->app->singleton(RailsCrypto::class);
+        $this->app->singleton(ResponseCache::class);
     }
 
     /**

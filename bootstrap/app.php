@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Middleware\AuthenticateCampfire;
+use App\Http\Middleware\CacheResponses;
 use App\Http\Middleware\RailsCsrf;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -14,7 +15,7 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->encryptCookies(except: ['session_token', '_campfire_session']);
         $middleware->web(replace: [PreventRequestForgery::class => RailsCsrf::class]);
-        $middleware->alias(['campfire.auth' => AuthenticateCampfire::class]);
+        $middleware->alias(['campfire.auth' => AuthenticateCampfire::class, 'campfire.cache' => CacheResponses::class]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->render(function (TokenMismatchException $e, Request $r) {

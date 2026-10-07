@@ -165,7 +165,9 @@ final class ChatController extends Controller
 
     public function findRoom(Request $r, int $id): Room
     {
-        return $r->user()->rooms()->findOrFail($id);
+        $authorized = $r->attributes->get('campfire.authorized_room');
+
+        return $authorized?->id === $id ? $authorized : $r->user()->rooms()->findOrFail($id);
     }
 
     public function json(Message $m): array

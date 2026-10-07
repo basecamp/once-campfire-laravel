@@ -18,13 +18,16 @@ final class MessageFragments
         $messages = new EloquentCollection(Collection::make($messages)->values()->all());
         $messages->loadMissing(['creator', 'room', 'boosts.booster']);
         $keys = $messages->map($this->messageKey(...))->all();
-        $cached = Cache::many($keys);
+        $fresh = request()->attributes->get('campfire.capture_response', false);
+        $cached = $fresh ? array_fill_keys($keys, null) : Cache::many($keys);
         $missing = $messages->filter(fn (Message $message, int $i) => ! is_array($cached[$keys[$i]]));
         if ($missing->isNotEmpty()) {
             $missing->loadMissing(['creator', 'richText', 'attachment.blob.variantRecords', 'boosts.booster', 'room']);
             foreach ($missing as $i => $message) {
                 $parts = $this->parts(fn () => view('messages.message', ['message' => $message])->render());
-                Cache::put($keys[$i], $parts, now()->addDays(1));
+                if (! $fresh) {
+                    Cache::put($keys[$i], $parts, now()->addDays(1));
+                }
                 $cached[$keys[$i]] = $parts;
             }
         }
@@ -36,10 +39,13 @@ final class MessageFragments
     {
         $boost->loadMissing('booster');
         $key = $this->boostKey($boost);
-        $parts = Cache::get($key);
+        $fresh = request()->attributes->get('campfire.capture_response', false);
+        $parts = $fresh ? null : Cache::get($key);
         if (! is_array($parts)) {
             $parts = $this->parts(fn () => view('boosts.boost-body', ['boost' => $boost])->render());
-            Cache::put($key, $parts, now()->addDays(1));
+            if (! $fresh) {
+                Cache::put($key, $parts, now()->addDays(1));
+            }
         }
 
         return implode(e(csrf_token()), $parts);

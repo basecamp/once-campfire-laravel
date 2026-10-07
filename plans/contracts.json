@@ -100,10 +100,14 @@
     "worker_mode": {
       "status": "verified",
       "evidence": "PHPUnit boots one Octane application and drives anonymous, signed-in and second-user requests through it: current-user meta, Rails CSRF secret, rejected cross-session token, message author, personal sidebar stream and shared view data never cross requests; per-request services add no listeners. Production image, worker mode, 16 concurrent clients mixing four users and anonymous visitors: every room page carried its own user and CSRF secret, every sidebar its own signed stream, no login page a user (13.7k requests in 10 seconds, 0 mismatches; also in classic mode and as a non-root user)."
+    },
+    "response_cache": {
+      "status": "partially_verified",
+      "evidence": "Native whole-response regressions cover hot reuse, current tokens/cookies and literal text, local and foreign SQLite commits, unversioned nested presentation changes, session/membership revocation, pre-auth and mid-render admission epochs, JSON/conditional bypass, disable and bounded eviction. Full native suite: 42 tests, 693 assertions. Fresh production browser and performance checks for this new cache remain pending."
     }
   },
   "verification": {
-    "phpunit": "27 tests, 587 assertions; production PHP 8.4.26 image (FrankenPHP 1.13, SQLite 3.53.4) with libvips",
+    "phpunit": "42 tests, 693 assertions; pinned production-compatible PHP toolchain with libvips",
     "independent_http": "18 checks passed",
     "independent_cable_security": "3 checks passed",
     "claude": "Requirements/architecture reviewed; source export blocked by automatic approval review.",

@@ -4,6 +4,7 @@ namespace App\Http\Middleware;
 
 use App\Models\User;
 use App\Support\RailsCrypto;
+use App\Support\ResponseCache;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -12,6 +13,9 @@ final class AuthenticateCampfire
 {
     public function handle(Request $request, Closure $next)
     {
+        if (CacheResponses::eligible($request)) {
+            $request->attributes->set('campfire.response_epoch', app(ResponseCache::class)->epoch());
+        }
         if (DB::table('bans')->where('ip_address', $request->ip())->exists()) {
             abort(403);
         }
@@ -35,6 +39,7 @@ final class AuthenticateCampfire
             abort(403);
         }
         $request->attributes->set('campfire_user', $user);
+        $request->attributes->set('campfire.session_id', $session->id);
         view()->share('currentUser', $user);
         $request->setUserResolver(fn () => $user);
         if (strtotime($session->last_active_at) < time() - 3600) {

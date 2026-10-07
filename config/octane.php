@@ -4,6 +4,7 @@ use App\Octane\FlushSharedViewData;
 use App\Octane\RollBackOpenTransactions;
 use App\Support\Assets;
 use App\Support\RailsCrypto;
+use App\Support\ResponseCache;
 use App\Support\RichTextRenderer;
 use Laravel\Octane\Contracts\OperationTerminated;
 use Laravel\Octane\Events\RequestHandled;
@@ -108,6 +109,7 @@ return [
         RailsCrypto::class,
         Assets::class,
         RichTextRenderer::class,
+        ResponseCache::class,
     ],
 
     'flush' => [

@@ -37,7 +37,7 @@ Route::get('/session/transfers/{id}', [TransfersController::class, 'show']);
 Route::match(['PATCH', 'PUT'], '/session/transfers/{id}', [TransfersController::class, 'update']);
 Route::get('/rails/active_storage/representations/redirect/{signed}/{variation}/{filename}', [StorageController::class, 'representation']);
 Route::match(['POST', 'DELETE'], '/rooms/{room}/{key}/messages/{id}/boosts/{boost?}', [BotsController::class, 'boost'])->whereNumber(['room', 'id', 'boost']);
-Route::middleware('campfire.auth')->group(function () {
+Route::middleware(['campfire.auth', 'campfire.cache'])->group(function () {
     Route::delete('/users/{user}/avatar', [StorageController::class, 'deleteAvatar']);
     Route::delete('/account/logo', [StorageController::class, 'deleteLogo']);
     Route::post('/unfurl_link', [LinksController::class, 'unfurl']);

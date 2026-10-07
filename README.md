@@ -29,6 +29,11 @@ with four hardware cores allocated to each app.
 
 ## Known differences
 
+- Authenticated room, message-list, sidebar and search HTML bodies use a bounded
+  cache: 64 MiB per persistent Octane worker, disabled with `CAMPFIRE_RESPONSE_CACHE_MB=0`.
+  Authorization, CSRF and cookies stay fresh; SQLite commits from any writer
+  invalidate cached bodies. JSON and conditional requests retain their native paths.
+
 - The direct-room list and New Ping picker share a nested Turbo frame, keeping the
   surrounding sidebar attached while editing. Background refreshes preserve an open
   New Ping form and selected recipients.
