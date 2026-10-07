@@ -14,6 +14,8 @@
 <meta name="vapid-public-key" content="{{ config('campfire.vapid_public_key', '') }}"><meta name="turbo-prefetch" content="true">
 <link rel="manifest" href="/webmanifest.json"><link rel="icon" href="/account/logo" type="image/png"><link rel="apple-touch-icon" href="/account/logo">
 {!! $assets->head() !!}
+@php($customStyles = \Illuminate\Support\Facades\DB::table('accounts')->value('custom_styles'))
+@if($customStyles)<style>{!! $customStyles !!}</style>@endif
 @yield('head')
 </head>
 <body class="{{ $bodyClass ?? '' }}" data-controller="local-time lightbox">

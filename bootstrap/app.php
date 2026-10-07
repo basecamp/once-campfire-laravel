@@ -1,9 +1,7 @@
 <?php
 
 use App\Http\Middleware\AuthenticateCampfire;
-use App\Http\Middleware\EncryptCookies;
 use App\Http\Middleware\RailsCsrf;
-use Illuminate\Cookie\Middleware\EncryptCookies as IlluminateEncryptCookies;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -15,10 +13,7 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(web: __DIR__.'/../routes/web.php', commands: __DIR__.'/../routes/console.php')
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->encryptCookies(except: ['session_token', '_campfire_session']);
-        $middleware->web(replace: [
-            IlluminateEncryptCookies::class => EncryptCookies::class,
-            PreventRequestForgery::class => RailsCsrf::class,
-        ]);
+        $middleware->web(replace: [PreventRequestForgery::class => RailsCsrf::class]);
         $middleware->alias(['campfire.auth' => AuthenticateCampfire::class]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

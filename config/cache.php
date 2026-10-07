@@ -39,11 +39,6 @@ return [
             'serialize' => false,
         ],
 
-        // Rendered message fragments, shared by every Octane worker through APCu shared memory.
-        'fragments' => [
-            'driver' => env('FRAGMENT_CACHE_STORE', extension_loaded('apcu') ? 'apc' : 'array'),
-        ],
-
         'database' => [
             'driver' => 'database',
             'connection' => env('DB_CACHE_CONNECTION'),

@@ -16,21 +16,32 @@ final class BlobStorage
 {
     private array $pendingFiles = [];
 
-    public function __construct()
+    /**
+     * Registered once by AppServiceProvider (not per instance: in a worker the event dispatcher
+     * outlives every request, so per-instance listeners would pile up and keep old instances).
+     */
+    public static function listen(): void
     {
         Event::listen(TransactionRolledBack::class, function ($event) {
-            foreach ($this->pendingFiles as $id => $pending) {
-                if ($pending['level'] > $event->connection->transactionLevel()) {
-                    $this->deleteFiles($pending['blob']);
-                    unset($this->pendingFiles[$id]);
-                }
+            if (app()->resolved(self::class)) {
+                app(self::class)->rolledBack($event->connection->transactionLevel());
             }
         });
         Event::listen(TransactionCommitted::class, function ($event) {
-            if ($event->connection->transactionLevel() === 0) {
-                $this->pendingFiles = [];
+            if ($event->connection->transactionLevel() === 0 && app()->resolved(self::class)) {
+                app(self::class)->pendingFiles = [];
             }
         });
+    }
+
+    private function rolledBack(int $level): void
+    {
+        foreach ($this->pendingFiles as $id => $pending) {
+            if ($pending['level'] > $level) {
+                $this->deleteFiles($pending['blob']);
+                unset($this->pendingFiles[$id]);
+            }
+        }
     }
 
     public function path(Blob $blob): string

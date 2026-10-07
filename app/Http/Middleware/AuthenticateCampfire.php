@@ -43,7 +43,6 @@ final class AuthenticateCampfire
             abort(403);
         }
         $request->attributes->set('campfire_user', $user);
-        $request->attributes->set('campfire_session_id', $sessionId);
         view()->share('currentUser', $user);
         $request->setUserResolver(fn () => $user);
         if (strtotime((string) $lastActive) < time() - 3600) {

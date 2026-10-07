@@ -10,18 +10,15 @@ use App\Models\Room;
 use App\Models\User;
 use App\Support\BlobStorage;
 use App\Support\Media;
-use App\Support\MessageFragments;
 use App\Support\MessageWriter;
 use App\Support\Presence;
 use App\Support\RailsCrypto;
 use App\Support\RichTextRenderer;
 use App\Support\SocketSessions;
-use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
-use Laravel\Octane\Events\RequestReceived;
 use Symfony\Component\Process\Process;
 use Tests\TestCase;
 use Workerman\Connection\TcpConnection;
@@ -53,6 +50,62 @@ final class CampfireTest extends TestCase
         $this->withUnencryptedCookie('session_token', app(RailsCrypto::class)->signCookie('session_token', $token));
     }
 
+    public function test_direct_room_heading_names_the_other_participant_for_screen_readers(): void
+    {
+        [$user] = $this->fixture();
+        $other = User::create(['name' => 'Other participant', 'role' => 0, 'status' => 0]);
+        $room = Room::create(['type' => 'Rooms::Direct', 'creator_id' => $user->id]);
+        Membership::create(['room_id' => $room->id, 'user_id' => $user->id]);
+        Membership::create(['room_id' => $room->id, 'user_id' => $other->id]);
+        $this->auth($user);
+        $this->get('/rooms/'.$room->id)->assertOk()->assertSee('<span class="for-screen-reader">Ping with </span>Other participant', false);
+    }
+
+    public function test_session_transfer_automatically_submits_without_signing_in_on_get(): void
+    {
+        [$user, $room] = $this->fixture();
+        $id = app(RailsCrypto::class)->signedId($user->id, 'User', 'transfer', now()->addHours(4)->utc()->format('Y-m-d\\TH:i:s.v\\Z'));
+        $path = '/session/transfers/'.$id;
+        $this->get($path)->assertOk()->assertSee('data-controller="auto-submit"', false)->assertSee('</form>', false)->assertSee('auto-submit', false);
+        $this->assertDatabaseCount('sessions', 0);
+        $this->patch($path)->assertRedirect('/');
+        $this->assertDatabaseCount('sessions', 1);
+        $this->assertSame($user->id, DB::table('sessions')->value('user_id'));
+    }
+
+    public function test_custom_styles_apply_to_room_profile_and_account_pages_after_updates(): void
+    {
+        [$user, $room] = $this->fixture();
+        $this->auth($user);
+        $styles = 'body { --custom-style-test: first; }';
+        $this->patch('/account/custom_styles', ['account' => ['custom_styles' => $styles]])->assertRedirect('/account/edit');
+        foreach (['/rooms/'.$room->id, '/users/me/profile', '/account/edit'] as $path) {
+            $this->get($path)->assertOk()->assertSee('<style>'.$styles.'</style>', false);
+        }
+        $changed = 'body { --custom-style-test: second; }';
+        $this->patch('/account/custom_styles', ['account' => ['custom_styles' => $changed]])->assertRedirect('/account/edit');
+        $this->get('/rooms/'.$room->id)->assertOk()->assertSee('<style>'.$changed.'</style>', false)->assertDontSee($styles, false);
+    }
+
+    public function test_search_reaches_sparse_memberships_and_quotes_literal_terms(): void
+    {
+        [$user, $room] = $this->fixture();
+        $visible = app(MessageWriter::class)->create($room, $user, ['body' => '<p>searchsparseonly</p>']);
+        $private = Room::create(['name' => 'Private', 'type' => 'Rooms::Closed', 'creator_id' => $user->id]);
+        DB::transaction(function () use ($private, $user) {
+            for ($i = 0; $i < 1100; $i++) {
+                $id = DB::table('messages')->insertGetId(['room_id' => $private->id, 'creator_id' => $user->id, 'client_message_id' => 'sparse-'.$i, 'created_at' => now(), 'updated_at' => now()]);
+                DB::insert('INSERT INTO message_search_index(rowid,body) VALUES (?,?)', [$id, 'searchsparseonly']);
+            }
+        });
+        $this->assertSame([$visible->id], Message::searchFor($user, 'searchsparseonly')->pluck('id')->all());
+        Membership::where('user_id', $user->id)->where('room_id', $room->id)->delete();
+        $this->assertCount(0, Message::searchFor($user, 'searchsparseonly'));
+        Membership::create(['user_id' => $user->id, 'room_id' => $private->id]);
+        $this->assertCount(100, Message::searchFor($user, 'searchsparseonly'));
+        $this->assertCount(0, Message::searchFor($user, 'searchsparseonly AND'));
+    }
+
     public function test_message_writes_index_room_unread_and_notifications_after_commit(): void
     {
         [$u,$room] = $this->fixture();
@@ -81,77 +134,6 @@ final class CampfireTest extends TestCase
         $this->get('/rooms/'.$room->id)->assertOk()->assertSee('Hello Campfire')->assertSee('RoomMessagesChannel');
         $this->get('/users/me/sidebar')->assertOk()->assertSee('Watercooler');
         $this->get('/searches?q=Hello')->assertOk()->assertSee('Hello Campfire');
-    }
-
-    public function test_message_fragments_are_cached_per_version_without_sharing_csrf_tokens(): void
-    {
-        config(['cache.stores.fragments' => ['driver' => 'array']]);
-        [$u, $room] = $this->fixture();
-        $this->auth($u);
-        $this->post('/rooms/'.$room->id.'/messages', ['message' => ['body' => '<p>Cached fragment</p>']])->assertOk();
-        $message = Message::firstOrFail();
-        $token = session()->token();
-        $this->assertNotEmpty($token);
-        $events = array_map(fn ($line) => json_decode($line, true), file(config('campfire.events'), FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES));
-        $broadcast = last(array_filter($events, fn ($event) => $event['stream'] === 'room_'.$room->id.'_messages'));
-        $this->assertSame(['stream' => 'user_'.$u->id.'_unreads', 'message' => ['roomId' => $room->id]], last($events));
-        $this->assertStringContainsString('Cached fragment', $broadcast['message']);
-        $this->assertStringNotContainsString($token, $broadcast['message']);
-        $this->assertStringContainsString('name="_token" value=""', $broadcast['message']);
-
-        $fragments = app(MessageFragments::class);
-        $viewer = $fragments->render([$message->fresh()], token: 'viewer-token');
-        $this->assertStringContainsString('name="_token" value="viewer-token"', $viewer);
-        $this->assertStringNotContainsString($token, $viewer);
-
-        DB::table('action_text_rich_texts')->update(['body' => '<p>Changed behind the cache</p>']);
-        $this->assertStringContainsString('Cached fragment', $fragments->render([$message->fresh()]));
-
-        $before = $message->fresh()->getRawOriginal('updated_at');
-        $this->travel(1)->seconds();
-        $this->post('/messages/'.$message->id.'/boosts', ['boost' => ['content' => '🔥']])->assertRedirect();
-        $this->assertNotSame($before, $message->fresh()->getRawOriginal('updated_at'));
-        $this->get('/rooms/'.$room->id)->assertOk()->assertSee('Changed behind the cache')->assertSee('boosted 🔥', false);
-    }
-
-    public function test_message_text_containing_a_csrf_token_is_not_rewritten(): void
-    {
-        config(['cache.stores.fragments' => ['driver' => 'array']]);
-        [$u, $room] = $this->fixture();
-        $this->auth($u);
-        $this->get('/rooms/'.$room->id)->assertOk();
-        $token = session()->token();
-        $this->post('/rooms/'.$room->id.'/messages', ['message' => ['body' => '<p>my token is '.$token.'</p>']])->assertOk();
-
-        $fragments = app(MessageFragments::class);
-        $this->assertStringContainsString('my token is '.$token, $fragments->render([Message::firstOrFail()], token: 'viewer-token'));
-        $this->assertStringContainsString('my token is '.$token, $fragments->render([Message::firstOrFail()], token: ''));
-        $this->get('/rooms/'.$room->id)->assertOk()->assertSee('my token is '.$token, false);
-        $this->assertSame($token, session()->token());
-    }
-
-    public function test_rendering_messages_from_many_direct_rooms_loads_their_members_once(): void
-    {
-        config(['cache.stores.fragments' => ['driver' => 'array']]);
-        [$u] = $this->fixture();
-        $messages = [];
-        foreach (range(1, 5) as $n) {
-            $other = User::create(['name' => 'Direct '.$n, 'role' => 0, 'status' => 0]);
-            $direct = Room::create(['type' => 'Rooms::Direct', 'creator_id' => $u->id]);
-            Membership::create(['room_id' => $direct->id, 'user_id' => $u->id, 'involvement' => 'everything']);
-            Membership::create(['room_id' => $direct->id, 'user_id' => $other->id, 'involvement' => 'everything']);
-            $messages[] = app(MessageWriter::class)->create($direct, $u, ['body' => 'ping '.$n])->id;
-        }
-
-        $queries = 0;
-        DB::listen(function ($query) use (&$queries) {
-            $queries += str_contains($query->sql, '"memberships"') ? 1 : 0;
-        });
-        $html = app(MessageFragments::class)->render(Message::whereIn('id', $messages)->get(), token: '');
-        $this->assertSame(1, $queries);
-        foreach (range(1, 5) as $n) {
-            $this->assertStringContainsString('Direct '.$n, $html);
-        }
     }
 
     public function test_nonmember_cannot_read_or_write_even_open_rooms(): void
@@ -507,13 +489,26 @@ PHP;
             ->assertCookieExpired($guestId);
     }
 
-    public function test_octane_requests_do_not_inherit_the_previous_users_view_data(): void
+    public function test_sidebar_is_a_complete_page_for_the_current_viewer(): void
     {
-        [$u] = $this->fixture();
-        view()->share('currentUser', $u);
+        [$user] = $this->fixture();
+        $other = User::create(['name' => 'Other participant', 'role' => 0, 'status' => 0]);
+        $direct = Room::create(['type' => 'Rooms::Direct', 'creator_id' => $user->id]);
+        Membership::create(['room_id' => $direct->id, 'user_id' => $user->id]);
+        Membership::create(['room_id' => $direct->id, 'user_id' => $other->id]);
+        $this->auth($user);
+        $response = $this->get('/users/me/sidebar')->assertOk();
+        $response->assertSee('<!DOCTYPE html>', false);
+        $response->assertSee('name="current-user-id" content="'.$user->id.'"', false);
+        $response->assertSee('id="user_sidebar"', false);
+        $response->assertSee('</html>', false);
 
-        event(new RequestReceived($this->app, $this->app, Request::create('/session/new')));
-
-        $this->assertNull(view()->shared('currentUser'));
+        $document = new \DOMDocument;
+        $document->loadHTML($response->getContent(), LIBXML_NOERROR | LIBXML_NOWARNING);
+        $xpath = new \DOMXPath($document);
+        $this->assertSame(1, $xpath->query('//*[@id="user_sidebar"]//turbo-frame[@id="direct_rooms_control" and @target="_top"]')->length);
+        $this->assertSame(1, $xpath->query('//*[@id="direct_rooms_control"]//a[@href="/rooms/directs/new" and @data-turbo-frame="direct_rooms_control"]')->length);
+        $this->assertSame(1, $xpath->query('//*[@id="direct_rooms_control"]//*[@id="direct_rooms"]//a[@id="list_room_'.$direct->id.'"]')->length);
+        $this->assertSame(0, $xpath->query('//*[@id="direct_rooms_control"]//*[@id="shared_rooms"]')->length);
     }
 }

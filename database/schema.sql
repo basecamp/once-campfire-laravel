@@ -64,7 +64,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS "index_memberships_on_room_id_and_user_id" ON 
 CREATE INDEX IF NOT EXISTS "index_memberships_on_user_id" ON "memberships" ("user_id");
 CREATE INDEX IF NOT EXISTS "index_messages_on_creator_id" ON "messages" ("creator_id");
 CREATE INDEX IF NOT EXISTS "index_messages_on_room_id" ON "messages" ("room_id");
-CREATE INDEX IF NOT EXISTS "index_messages_on_room_id_and_created_at" ON "messages" ("room_id", "created_at");
 CREATE INDEX IF NOT EXISTS "index_push_subscriptions_on_user_id" ON "push_subscriptions" ("user_id");
 CREATE INDEX IF NOT EXISTS "index_searches_on_user_id" ON "searches" ("user_id");
 CREATE UNIQUE INDEX IF NOT EXISTS "index_sessions_on_token" ON "sessions" ("token");

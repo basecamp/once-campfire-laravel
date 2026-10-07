@@ -1,7 +1,8 @@
 <?php
 
+use App\Octane\FlushSharedViewData;
+use App\Octane\RollBackOpenTransactions;
 use App\Support\Assets;
-use App\Support\BlobStorage;
 use App\Support\RailsCrypto;
 use Laravel\Octane\Contracts\OperationTerminated;
 use Laravel\Octane\Events\RequestHandled;
@@ -15,8 +16,6 @@ use Laravel\Octane\Events\WorkerErrorOccurred;
 use Laravel\Octane\Events\WorkerStarting;
 use Laravel\Octane\Events\WorkerStopping;
 use Laravel\Octane\Listeners\CloseMonologHandlers;
-use Laravel\Octane\Listeners\CollectGarbage;
-use Laravel\Octane\Listeners\DisconnectFromDatabases;
 use Laravel\Octane\Listeners\EnsureUploadedFilesAreValid;
 use Laravel\Octane\Listeners\EnsureUploadedFilesCanBeMoved;
 use Laravel\Octane\Listeners\FlushOnce;
@@ -26,46 +25,17 @@ use Laravel\Octane\Listeners\ReportException;
 use Laravel\Octane\Listeners\StopWorkerIfNecessary;
 use Laravel\Octane\Octane;
 
+/*
+ * Laravel Octane under FrankenPHP worker mode (deploy/Caddyfile, public/frankenphp-worker.php).
+ * One application is booted per worker thread and serves MAX_REQUESTS requests (bin/start) from a
+ * per-request clone ("sandbox"); the listeners below reset what would otherwise survive between
+ * requests. See README.md, "Worker mode".
+ */
 return [
-
-    /*
-    |--------------------------------------------------------------------------
-    | Octane Server
-    |--------------------------------------------------------------------------
-    |
-    | This value determines the default "server" that will be used by Octane
-    | when starting, restarting, or stopping your server via the CLI. You
-    | are free to change this to the supported server of your choosing.
-    |
-    | Supported: "roadrunner", "swoole", "frankenphp"
-    |
-    */
 
     'server' => env('OCTANE_SERVER', 'frankenphp'),
 
-    /*
-    |--------------------------------------------------------------------------
-    | Force HTTPS
-    |--------------------------------------------------------------------------
-    |
-    | When this configuration value is set to "true", Octane will inform the
-    | framework that all absolute links must be generated using the HTTPS
-    | protocol. Otherwise your links may be generated using plain HTTP.
-    |
-    */
-
     'https' => env('OCTANE_HTTPS', false),
-
-    /*
-    |--------------------------------------------------------------------------
-    | Octane Listeners
-    |--------------------------------------------------------------------------
-    |
-    | All of the event listeners for Octane's events are defined below. These
-    | listeners are responsible for resetting your application's state for
-    | the next request. You may even add your own listeners to the list.
-    |
-    */
 
     'listeners' => [
         WorkerStarting::class => [
@@ -76,7 +46,9 @@ return [
         RequestReceived::class => [
             ...Octane::prepareApplicationForNextOperation(),
             ...Octane::prepareApplicationForNextRequest(),
-            //
+            // The view factory is warmed and shared by every request; AuthenticateCampfire shares
+            // `currentUser` (and ShareErrorsFromSession `errors`) into it.
+            FlushSharedViewData::class,
         ],
 
         RequestHandled::class => [
@@ -84,12 +56,15 @@ return [
         ],
 
         RequestTerminated::class => [
+            // Uploaded temp files: PHP deletes them only at the end of a script, which a worker
+            // never reaches.
             FlushUploadedFiles::class,
+            // And drop the request's shared view data (the user model) as soon as it is done.
+            FlushSharedViewData::class,
         ],
 
         TaskReceived::class => [
             ...Octane::prepareApplicationForNextOperation(),
-            //
         ],
 
         TaskTerminated::class => [
@@ -98,7 +73,6 @@ return [
 
         TickReceived::class => [
             ...Octane::prepareApplicationForNextOperation(),
-            //
         ],
 
         TickTerminated::class => [
@@ -108,8 +82,9 @@ return [
         OperationTerminated::class => [
             FlushOnce::class,
             FlushTemporaryContainerInstances::class,
-            // DisconnectFromDatabases::class,
-            // CollectGarbage::class,
+            // The SQLite connections persist across requests: never let one request's unfinished
+            // transaction (and its write lock) leak into the next.
+            RollBackOpenTransactions::class,
         ],
 
         WorkerErrorOccurred::class => [
@@ -123,71 +98,25 @@ return [
     ],
 
     /*
-    |--------------------------------------------------------------------------
-    | Warm / Flush Bindings
-    |--------------------------------------------------------------------------
-    |
-    | The bindings listed below will either be pre-warmed when a worker boots
-    | or they will be flushed before every new request. Flushing a binding
-    | will force the container to resolve that binding again when asked.
-    |
-    */
-
+     * Resolved once per worker and shared by every request. These hold no request state:
+     * RailsCrypto caches PBKDF2-derived keys (re-derived if the secret changes), Assets the
+     * digest manifest. RichTextRenderer is scoped (it memoizes mention and blob lookups per
+     * request) and keeps its two HTMLPurifier instances in statics instead.
+     */
     'warm' => [
         ...Octane::defaultServicesToWarm(),
-        Assets::class,
-        BlobStorage::class,
         RailsCrypto::class,
+        Assets::class,
     ],
 
     'flush' => [
         //
     ],
 
-    /*
-    |--------------------------------------------------------------------------
-    | Octane Swoole Tables
-    |--------------------------------------------------------------------------
-    |
-    | While using Swoole, you may define additional tables as required by the
-    | application. These tables can be used to store data that needs to be
-    | quickly accessed by other workers on the particular Swoole server.
-    |
-    */
-
-    'tables' => [
-        'example:1000' => [
-            'name' => 'string:1000',
-            'votes' => 'int',
-        ],
-    ],
-
-    /*
-    |--------------------------------------------------------------------------
-    | Octane Swoole Cache Table
-    |--------------------------------------------------------------------------
-    |
-    | While using Swoole, you may leverage the Octane cache, which is powered
-    | by a Swoole table. You may set the maximum number of rows as well as
-    | the number of bytes per row using the configuration options below.
-    |
-    */
-
     'cache' => [
         'rows' => 1000,
         'bytes' => 10000,
     ],
-
-    /*
-    |--------------------------------------------------------------------------
-    | File Watching
-    |--------------------------------------------------------------------------
-    |
-    | The following list of files and directories will be watched when using
-    | the --watch option offered by Octane. If any of the directories and
-    | files are changed, Octane will automatically reload your workers.
-    |
-    */
 
     'watch' => [
         'app',
@@ -201,60 +130,10 @@ return [
         '.env',
     ],
 
-    /*
-    |--------------------------------------------------------------------------
-    | Garbage Collection Threshold
-    |--------------------------------------------------------------------------
-    |
-    | When executing long-lived PHP scripts such as Octane, memory can build
-    | up before being cleared by PHP. You can force Octane to run garbage
-    | collection if your application consumes this amount of megabytes.
-    |
-    */
-
     'garbage' => 50,
-
-    /*
-    |--------------------------------------------------------------------------
-    | Maximum Execution Time
-    |--------------------------------------------------------------------------
-    |
-    | The following setting configures the maximum execution time for requests
-    | being handled by Octane. You may set this value to 0 to indicate that
-    | there isn't a specific time limit on Octane request execution time.
-    |
-    */
 
     'max_execution_time' => 30,
 
-    /*
-    |--------------------------------------------------------------------------
-    | Octane Server State File
-    |--------------------------------------------------------------------------
-    |
-    | This value determines where Octane stores the state file used to track
-    | the running server's master process ID and admin endpoint, which is
-    | read by various Octane commands. You may tweak this if necessary.
-    |
-    */
-
     'state_file' => env('OCTANE_STATE_FILE', storage_path('logs/octane-server-state.json')),
-
-    /*
-    |--------------------------------------------------------------------------
-    | RoadRunner Options
-    |--------------------------------------------------------------------------
-    |
-    | The following options are only used when the RoadRunner server is the
-    | server powering your application. You may customize the path to the
-    | worker binary here, which is useful for zero-downtime deployments
-    | where the application is served from a symlinked "current" path.
-    |
-    */
-
-    'roadrunner' => [
-        'command' => env('OCTANE_ROADRUNNER_COMMAND', 'vendor/bin/roadrunner-worker'),
-        'http_middleware' => env('OCTANE_ROADRUNNER_HTTP_MIDDLEWARE', 'static'),
-    ],
 
 ];

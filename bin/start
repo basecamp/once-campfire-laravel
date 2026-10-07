@@ -1,27 +1,105 @@
-#!/bin/sh
-set -eu
-: "${HTTP_PORT:=80}"
-: "${CABLE_PORT:=$((HTTP_PORT + 1000))}"
-: "${WEB_CONCURRENCY:=auto}"
-: "${MAX_REQUESTS:=1000}"
-export CABLE_PORT
+#!/usr/bin/env bash
+# The container's entrypoint, one supervisor for
+#
+#   web    frankenphp run (deploy/Caddyfile): Caddy + PHP threads, Laravel Octane in worker mode
+#   cable  bin/cable, the Workerman Action Cable server on 127.0.0.1:$CABLE_PORT
+#   queue  php artisan queue:work (notifications, webhooks, push)
+#
+# cable and queue are restarted whenever they exit; when frankenphp exits, everything stops and
+# the container exits non-zero. TERM/INT stop every process.
+#
+# Environment:
+#   SECRET_KEY_BASE   required
+#   HTTP_PORT         80
+#   CABLE_PORT        where bin/cable listens (loopback only): TARGET_PORT if set, else HTTP_PORT + 1000
+#   FRANKENPHP_MODE   worker (default): Laravel Octane, the application booted once per thread;
+#                     classic: public/index.php run from scratch for every request, like PHP-FPM
+#   PHP_WORKERS       Octane worker threads, 2 x CPUs (FrankenPHP's default)
+#   PHP_THREADS       PHP threads besides the workers: 1 in worker mode, PHP_WORKERS in classic mode
+#   MAX_REQUESTS      requests an Octane worker serves before it reboots, 500 (octane:frankenphp's default)
+#
+# Runs as root (as the nginx + PHP-FPM image did; storage/ is then handed to www-data) or as any
+# --user uid:gid that can write /rails/storage.
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
 : "${SECRET_KEY_BASE:?SECRET_KEY_BASE is required}"
-export APP_ENV=production APP_DEBUG=false DB_CONNECTION=sqlite DB_DATABASE=${DB_DATABASE:-/rails/storage/db/production.sqlite3} SESSION_DRIVER=cookie CACHE_STORE=file QUEUE_CONNECTION=database APP_KEY=${APP_KEY:-$(php -r 'echo "base64:".base64_encode(hash_hmac("sha256","laravel-framework",getenv("SECRET_KEY_BASE"),true));')}
-mkdir -p storage/db storage/files storage/framework/cache/data storage/framework/sessions storage/framework/views storage/logs
-chown -R www-data:www-data storage bootstrap/cache
+
+export HTTP_PORT="${HTTP_PORT:-80}"
+export CABLE_PORT="${CABLE_PORT:-${TARGET_PORT:-$((HTTP_PORT + 1000))}}"
+export CAMPFIRE_STORAGE_PATH="$PWD/storage"
+export PHP_WORKERS="${PHP_WORKERS:-$(($(nproc) * 2))}"
+export FRANKENPHP_MODE="${FRANKENPHP_MODE:-worker}"
+case "$FRANKENPHP_MODE" in
+  # Threads beyond the workers (FrankenPHP adds the worker threads to num_threads).
+  worker) export PHP_THREADS="${PHP_THREADS:-1}" ;;
+  # No workers: the same number of threads, each running every request from scratch.
+  classic) export PHP_THREADS="${PHP_THREADS:-$PHP_WORKERS}" ;;
+  *) echo "FRANKENPHP_MODE must be worker or classic, not '$FRANKENPHP_MODE'" >&2; exit 1 ;;
+esac
+
+export APP_ENV=production APP_DEBUG=false DB_CONNECTION=sqlite \
+  DB_DATABASE="${DB_DATABASE:-$PWD/storage/db/production.sqlite3}" \
+  SESSION_DRIVER=file CACHE_STORE=file QUEUE_CONNECTION=database
+APP_KEY="${APP_KEY:-$(php -r 'echo "base64:".base64_encode(hash_hmac("sha256","laravel-framework",getenv("SECRET_KEY_BASE"),true));')}"
+export APP_KEY
+
+# What `php artisan octane:frankenphp` hands FrankenPHP for Octane's worker script.
+export APP_BASE_PATH="$PWD" APP_PUBLIC_PATH="$PWD/public" LARAVEL_OCTANE=1 \
+  MAX_REQUESTS="${MAX_REQUESTS:-500}" REQUEST_MAX_EXECUTION_TIME="${REQUEST_MAX_EXECUTION_TIME:-30}"
+if [ "$FRANKENPHP_MODE" = classic ]; then
+  unset LARAVEL_OCTANE
+fi
+
+# Caddy's state, writable under any uid (the base image's /config and /data are root's).
+export XDG_CONFIG_HOME=/tmp/caddy/config XDG_DATA_HOME=/tmp/caddy/data
+
+log() { echo "bin/start: $*" >&2; }
+
+mkdir -p storage/db storage/files storage/framework/cache/data storage/framework/sessions \
+  storage/framework/views storage/logs "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
 php artisan campfire:install --no-interaction
-php artisan optimize
-chown -R www-data:www-data storage bootstrap/cache
-setpriv --reuid=www-data --regid=www-data --init-groups php artisan octane:frankenphp --caddyfile=deploy/Caddyfile --port="$HTTP_PORT" --workers="$WEB_CONCURRENCY" --max-requests="$MAX_REQUESTS" &
-web_pid=$!
-php artisan queue:work --sleep=1 --tries=3 --timeout=30 > storage/logs/queue.log 2>&1 &
-queue_pid=$!
-rm -f storage/cable.pid
-php bin/cable start > storage/logs/cable.log 2>&1 &
-cable_pid=$!
-shutdown() {
- kill -TERM "$web_pid" "$queue_pid" "$cable_pid" 2>/dev/null || true
- wait || true
+# Both caches are written once here, before any PHP thread starts (OPcache never revalidates).
+php artisan config:cache
+php artisan view:cache
+if [ "$(id -u)" = 0 ]; then
+  chown -R www-data:www-data storage bootstrap/cache
+fi
+
+pids=()
+
+# Runs a command again whenever it exits, until this loop gets TERM/INT.
+supervise() {
+  local name=$1 child=0
+  shift
+  trap '[ "$child" -gt 0 ] && kill -TERM "$child" 2>/dev/null; wait "$child" 2>/dev/null; exit 0' TERM INT
+  while :; do
+    "$@" &
+    child=$!
+    wait "$child" && status=0 || status=$?
+    log "$name exited ($status); restarting"
+    sleep 1
+  done
 }
-trap shutdown TERM INT
-wait "$web_pid"
+
+supervise queue sh -c 'exec php artisan queue:work --sleep=1 --tries=3 --timeout=30 >> storage/logs/queue.log 2>&1' &
+pids+=($!)
+supervise cable sh -c 'rm -f storage/cable.pid; exec php bin/cable start >> storage/logs/cable.log 2>&1' &
+pids+=($!)
+
+frankenphp run --config deploy/Caddyfile --adapter caddyfile &
+web=$!
+
+stop() {
+  trap - TERM INT
+  kill -TERM "$web" "${pids[@]}" 2>/dev/null || true
+  wait || true
+}
+
+trap 'stop; exit 0' TERM INT
+
+wait "$web" && status=0 || status=$?
+log "frankenphp exited ($status)"
+stop
+exit $((status == 0 ? 1 : status))

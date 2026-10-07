@@ -31,18 +31,14 @@ return [
     */
 
     'connections' => [
-        'jobs' => [
-            'driver' => 'sqlite',
-            'database' => storage_path('jobs.sqlite3'),
-            'prefix' => '',
-            'foreign_key_constraints' => true,
-            'busy_timeout' => 10000,
-            'journal_mode' => 'WAL',
-            'synchronous' => 'NORMAL',
-            'transaction_mode' => 'IMMEDIATE',
-        ],
+        // Both SQLite databases are in WAL mode (campfire:install). synchronous=NORMAL is what
+        // Rails sets (SQLite3Adapter::DEFAULT_PRAGMAS): WAL commits stop waiting for an fsync,
+        // which under FULL held each write lock for milliseconds. The queue worker commits
+        // several times per job, and SQLite's busy handler backs off up to 100 ms per retry, so
+        // a request inserting a job could wait seconds behind it. In WAL mode NORMAL never
+        // corrupts the database; a power loss can undo the last commits.
+        'jobs' => ['driver' => 'sqlite', 'database' => storage_path('jobs.sqlite3'), 'prefix' => '', 'foreign_key_constraints' => true, 'busy_timeout' => 10000, 'journal_mode' => null, 'synchronous' => 'normal', 'transaction_mode' => 'IMMEDIATE'],
 
-        // WAL with durable NORMAL sync. HTTP responses unchanged.
         'sqlite' => [
             'driver' => 'sqlite',
             'url' => env('DB_URL'),
@@ -50,15 +46,13 @@ return [
             'prefix' => '',
             'foreign_key_constraints' => env('DB_FOREIGN_KEYS', true),
             'busy_timeout' => 10000,
-            'journal_mode' => 'WAL',
-            'synchronous' => 'NORMAL',
+            'journal_mode' => 'wal',
+            'synchronous' => 'normal',
             'transaction_mode' => 'IMMEDIATE',
             'pragmas' => [
-                'mmap_size' => 268435456,
-                'journal_size_limit' => 134217728,
-                'cache_size' => -131072,
-                'temp_store' => 'MEMORY',
-                'wal_autocheckpoint' => 10000,
+                'cache_size' => 2000,
+                'journal_size_limit' => 67108864,
+                'mmap_size' => 134217728,
             ],
         ],
 
@@ -76,6 +70,7 @@ return [
             'prefix' => '',
             'prefix_indexes' => true,
             'strict' => true,
+            'engine' => null,
             'options' => extension_loaded('pdo_mysql') ? array_filter([
                 (PHP_VERSION_ID >= 80500 ? Mysql::ATTR_SSL_CA : PDO::MYSQL_ATTR_SSL_CA) => env('MYSQL_ATTR_SSL_CA'),
             ]) : [],
@@ -95,6 +90,7 @@ return [
             'prefix' => '',
             'prefix_indexes' => true,
             'strict' => true,
+            'engine' => null,
             'options' => extension_loaded('pdo_mysql') ? array_filter([
                 (PHP_VERSION_ID >= 80500 ? Mysql::ATTR_SSL_CA : PDO::MYSQL_ATTR_SSL_CA) => env('MYSQL_ATTR_SSL_CA'),
             ]) : [],

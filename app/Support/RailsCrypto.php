@@ -4,56 +4,19 @@ namespace App\Support;
 
 final class RailsCrypto
 {
-    /** Every key generator salt in use, with its derived length. */
-    private const SALTS = [
-        'signed cookie' => 64,
-        'authenticated encrypted cookie' => 32,
-        'active_record/signed_id' => 64,
-        'signed_global_ids' => 64,
-        'turbo/signed_stream_verifier_key' => 64,
-        'ActiveStorage' => 64,
-    ];
-
     private ?string $cachedSecret = null;
 
     private array $keys = [];
 
-    /**
-     * Derive every key up front so `config:cache` stores them and requests skip PBKDF2 entirely.
-     */
-    public static function deriveKeys(?string $secret): array
-    {
-        if (! $secret) {
-            return [];
-        }
-
-        $keys = [];
-        foreach (self::SALTS as $salt => $length) {
-            $keys[$salt][$length] = base64_encode(hash_pbkdf2('sha256', $secret, $salt, 1000, $length, true));
-        }
-
-        return ['secret' => hash('sha256', $secret), 'derived' => $keys];
-    }
-
     public function key(string $salt, int $length = 64): string
     {
-        $secret = (string) config('campfire.secret');
+        $secret = config('campfire.secret');
         if ($this->cachedSecret !== $secret) {
             $this->cachedSecret = $secret;
-            $this->keys = $this->precomputedKeys($secret);
+            $this->keys = [];
         }
 
         return $this->keys[$salt][$length] ??= hash_pbkdf2('sha256', $secret, $salt, 1000, $length, true);
-    }
-
-    private function precomputedKeys(string $secret): array
-    {
-        $cached = config('campfire.keys', []);
-        if (($cached['secret'] ?? null) !== hash('sha256', $secret)) {
-            return [];
-        }
-
-        return array_map(fn (array $lengths) => array_map(base64_decode(...), $lengths), $cached['derived']);
     }
 
     public function json(mixed $value): string
@@ -143,8 +106,7 @@ final class RailsCrypto
         $meta = ['data' => $value];
         if ($expires !== null) {
             $meta['exp'] = $expires;
-        }
-        if ($purpose !== null) {
+        }if ($purpose !== null) {
             $meta['pur'] = $purpose;
         }
         $data = base64_encode($this->json(($purpose !== null || $expires !== null) ? ['_rails' => $meta] : $value));
@@ -170,8 +132,7 @@ final class RailsCrypto
         $meta = ['data' => $id];
         if ($expires !== null) {
             $meta['exp'] = $expires;
-        }
-        $meta['pur'] = $this->modelPurpose($model, $purpose);
+        }$meta['pur'] = $this->modelPurpose($model, $purpose);
         $data = rtrim(strtr(base64_encode($this->json(['_rails' => $meta])), '+/', '-_'), '=');
 
         return $data.'--'.hash_hmac('sha256', $data, $this->key('active_record/signed_id'));
@@ -187,8 +148,7 @@ final class RailsCrypto
         $p = explode('--', $raw);
         if (count($p) !== 2) {
             return null;
-        }
-        $algorithm = strlen($p[1]) === 40 ? 'sha1' : 'sha256';
+        }$algorithm = strlen($p[1]) === 40 ? 'sha1' : 'sha256';
         if (! hash_equals(hash_hmac($algorithm, $p[0], $this->key('active_record/signed_id')), $p[1])) {
             return null;
         }

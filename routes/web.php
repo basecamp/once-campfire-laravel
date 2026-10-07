@@ -11,6 +11,7 @@ use App\Http\Controllers\RoomsController;
 use App\Http\Controllers\SessionController;
 use App\Http\Controllers\StorageController;
 use App\Http\Controllers\TransfersController;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/up', [HealthController::class, 'show']);
@@ -93,5 +94,13 @@ Route::middleware('campfire.auth')->group(function () {
     Route::post('/rails/active_storage/direct_uploads', [StorageController::class, 'directUpload']);
     Route::get('/rooms/{kind}/{id}', [RoomsController::class, 'show'])->whereIn('kind', ['opens', 'closeds', 'directs'])->whereNumber('id');
     Route::delete('/rooms/{kind}/{id}', [RoomsController::class, 'deleteNamespaced'])->whereIn('kind', ['opens', 'closeds', 'directs'])->whereNumber('id');
-    Route::match(['GET', 'POST', 'PATCH', 'PUT', 'DELETE'], '/messages/{id?}', [ChatController::class, 'legacy'])->whereNumber('id');
+    Route::match(['GET', 'POST', 'PATCH', 'PUT', 'DELETE'], '/messages/{id?}', function (Request $r, ?int $id = null) {
+        $room = (int) $r->input('room_id');
+        abort_unless($room, 404);
+        $c = app(ChatController::class);
+
+        return match ($r->method()) {
+            'GET' => $id ? $c->show($r, $room, $id) : $c->messages($r, $room),'POST' => $c->create($r, $room),'PATCH','PUT' => $c->update($r, $room, $id),'DELETE' => $c->destroy($r, $room, $id)
+        };
+    })->whereNumber('id');
 });

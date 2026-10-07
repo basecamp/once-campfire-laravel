@@ -1,0 +1,5 @@
+<div id="boost_{{ $boost->id }}" class="boost boost-item flex-inline max-width align-center fill-white gap" data-controller="boost-delete" data-boost-delete-perform-class="boost--deleting" data-boost-delete-reveal-class="expanded" data-boost-delete-booster-id-value="{{ $boost->booster_id }}">
+<figure class="avatar boost__avatar flex-item-no-shrink"><a class="btn avatar" href="/users/{{ $boost->booster_id }}" data-turbo-frame="_top"><img src="{{ $boost->booster->avatarUrl() }}" width="48" height="48" alt="{{ $boost->booster->name }} boosted {{ $boost->content }}"></a></figure>
+<span role="button" class="txt-small" data-action="click->boost-delete#reveal keydown.enter->boost-delete#reveal:prevent" data-boost-delete-target="content">{{ $boost->content }}</span>
+<form action="/messages/{{ $boost->message_id }}/boosts/{{ $boost->id }}" method="post" data-action="boost-delete#perform" data-boost-delete-target="button">@csrf @method('DELETE')<button type="submit" class="btn btn--negative boost__delete" aria-label="Delete this boost">−</button></form>
+</div>

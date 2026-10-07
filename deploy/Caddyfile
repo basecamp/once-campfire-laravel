@@ -1,40 +1,91 @@
+# FrankenPHP (Caddy + PHP threads), replacing nginx + PHP-FPM: gzip, static files from public/
+# with Rails' public_file_server cache headers, X-Sendfile for stored blobs, /cable proxied to
+# bin/cable, and the app itself.
+#
+# bin/start computes every variable below; see it for the defaults.
+#   HTTP_PORT              listening port (80)
+#   CABLE_PORT             the Action Cable server (bin/cable) on 127.0.0.1
+#   FRANKENPHP_MODE        "worker" (default: Laravel Octane) or "classic" (php-{worker,classic}.caddy)
+#   PHP_WORKERS            Octane worker threads running public/frankenphp-worker.php (2 x CPUs)
+#   PHP_THREADS            PHP threads besides the workers, which FrankenPHP adds on top
+#                          (worker: 1; classic: PHP_WORKERS)
+#   CAMPFIRE_STORAGE_PATH  root holding files/ (Active Storage blobs) for X-Accel-Redirect
 {
-	{$CADDY_GLOBAL_OPTIONS}
+	admin off
+	skip_install_trust
+	http_port {$HTTP_PORT:80}
 
-	admin {$CADDY_SERVER_ADMIN_HOST}:{$CADDY_SERVER_ADMIN_PORT}
+	log {
+		level {$CADDY_LOG_LEVEL:WARN}
+	}
 
 	frankenphp {
-		worker {
-			file "{$APP_PUBLIC_PATH}/frankenphp-worker.php"
-			{$CADDY_SERVER_WORKER_DIRECTIVE}
-		}
+		num_threads {$PHP_THREADS:1}
 	}
 }
 
-{$CADDY_SERVER_SERVER_NAME} {
-	log {
-		level {$CADDY_SERVER_LOG_LEVEL}
-		format {$CADDY_SERVER_LOGGER}
+http://:{$HTTP_PORT:80} {
+	root * /rails/public
+
+	encode {
+		gzip 6
+		minimum_length 512
 	}
 
 	request_body {
-		max_size 105MB
+		max_size 100MB
 	}
 
-	route {
-		reverse_proxy /cable* 127.0.0.1:{$CABLE_PORT}
+	header -Server
 
-		root * "{$APP_PUBLIC_PATH}"
-		encode zstd br gzip
+	# Action Cable (bin/cable).
+	handle /cable {
+		reverse_proxy 127.0.0.1:{$CABLE_PORT:1080}
+	}
 
-		handle /assets/* {
-			header Cache-Control "public, max-age=31536000, immutable"
-			file_server
+	# Digest-stamped assets never change under their URL.
+	@assets {
+		path /assets/*
+		file
+	}
+	handle @assets {
+		header Cache-Control "public, immutable, max-age=31536000"
+		file_server
+	}
+
+	# Other files in public/ (Rails' public_file_server headers).
+	@public {
+		not path */ *.php
+		file
+	}
+	handle @public {
+		header Cache-Control "public, max-age=2592000"
+		file_server
+	}
+
+	handle {
+		# X-Sendfile offload: a BinaryFileResponse (response()->file()) for a blob or variant under
+		# storage/files leaves its body to Caddy, as AppServiceProvider trusts X-Sendfile-Type.
+		# BinaryFileResponse maps the absolute path through X-Accel-Mapping, so the
+		# X-Accel-Redirect header carries the path relative to files/. Files elsewhere (public/)
+		# are still sent by PHP.
+		request_header X-Sendfile-Type x-accel-redirect
+		request_header X-Accel-Mapping {$CAMPFIRE_STORAGE_PATH:/rails/storage}/files/=/
+
+		intercept {
+			@accel header X-Accel-Redirect *
+			handle_response @accel {
+				root * {$CAMPFIRE_STORAGE_PATH:/rails/storage}/files
+				rewrite * {resp.header.X-Accel-Redirect}
+				method * GET
+				header -X-Accel-Redirect
+				file_server
+			}
 		}
 
-		php_server {
-			index frankenphp-worker.php
-			try_files {path} frankenphp-worker.php
-		}
+		# FRANKENPHP_MODE (bin/start): "worker" boots Laravel once per thread through Octane and
+		# keeps it between requests; "classic" runs public/index.php from scratch for every
+		# request, like PHP-FPM.
+		import php-{$FRANKENPHP_MODE:worker}.caddy
 	}
 }
