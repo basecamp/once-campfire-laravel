@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Support\RailsCrypto;
 use Illuminate\Container\Container;
 use Illuminate\Database\Events\TransactionRolledBack;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Bootstrap\HandleExceptions;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Facade;
@@ -168,6 +169,19 @@ final class OctaneWorkerIsolationTest extends TestCase
         $this->assertSame(0, $connection->transactionLevel());
         $name = (new \PDO('sqlite:'.$this->dir.'/production.sqlite3'))->query('SELECT name FROM users WHERE id = '.$this->users['bob']['id'])->fetchColumn();
         $this->assertSame('Bob Brown', $name);
+        $this->assertWriterLockFree();
+
+        // Nor does one SQLite already ended itself leave the writer lock held: the transaction
+        // count cleanup finds nothing on the PDO to roll back.
+        (new \PDO('sqlite:'.$this->dir.'/production.sqlite3'))->exec('CREATE TABLE fixture_names (name TEXT UNIQUE ON CONFLICT ROLLBACK); INSERT INTO fixture_names VALUES (\'taken\')');
+        $connection->beginTransaction();
+        try {
+            $connection->table('fixture_names')->insert(['name' => 'taken']);
+            $this->fail('The duplicate should have thrown.');
+        } catch (QueryException) {
+        }
+        $this->request('GET', '/up');
+        $this->assertWriterLockFree();
 
         $cookies = ['session_token' => $this->sessionCookie($this->users['alice']['id'])];
         $events = $this->worker->application()->make('events');
@@ -180,6 +194,82 @@ final class OctaneWorkerIsolationTest extends TestCase
         // BlobStorage, resolved by every avatar request, used to add two listeners per instance.
         $this->assertSame($listeners, count($events->getListeners(TransactionRolledBack::class)));
         $this->assertSame([], array_keys(array_diff_key($this->worker->application()->make('view')->getShared(), ['__env' => 1, 'app' => 1])));
+    }
+
+    public function test_unchanged_rails_cookie_is_reused_but_login_return_to_and_logout_reissue_it(): void
+    {
+        $crypto = $this->worker->application()->make(RailsCrypto::class);
+        $login = $this->request('GET', '/session/new');
+        $cookies = $this->cookies($login);
+        $this->assertArrayHasKey('_campfire_session', $cookies);
+        $token = $this->csrfToken($login);
+        $again = $this->request('GET', '/session/new', [], $cookies);
+        $this->assertSame($token, $this->csrfToken($again));
+        $this->assertArrayNotHasKey('_campfire_session', $this->cookies($again));
+
+        $path = '/rooms/'.$this->room;
+        $redirect = $this->request('GET', $path, [], $cookies);
+        $this->assertSame(302, $redirect->getStatusCode());
+        $cookies = $this->cookies($redirect) + $cookies;
+        $payload = $crypto->decryptCookie('_campfire_session', $cookies['_campfire_session']);
+        $this->assertSame($path, $payload['return_to_after_authenticating']);
+
+        $user = $this->users['alice'];
+        $signedIn = $this->request('POST', '/session', ['email_address' => $user['email'], 'password' => 'secret123456', 'authenticity_token' => $token], $cookies);
+        $this->assertSame(302, $signedIn->getStatusCode());
+        $this->assertStringEndsWith($path, $signedIn->headers->get('Location'));
+        $this->assertArrayHasKey('_campfire_session', $this->cookies($signedIn));
+        $cookies = $this->cookies($signedIn) + $cookies;
+        $payload = $crypto->decryptCookie('_campfire_session', $cookies['_campfire_session']);
+        $this->assertArrayNotHasKey('return_to_after_authenticating', $payload);
+        $this->assertNotSame($token, $payload['_csrf_token']);
+        $room = $this->request('GET', $path, [], $cookies);
+        $this->assertSame(200, $room->getStatusCode());
+        $this->assertArrayNotHasKey('_campfire_session', $this->cookies($room));
+        $cookies = $this->cookies($room) + $cookies;
+        $token = $this->csrfToken($room);
+        $posted = $this->request('POST', $path.'/messages', ['message' => ['body' => 'valid cookie CSRF'], 'authenticity_token' => $token], $cookies);
+        $this->assertSame(200, $posted->getStatusCode());
+        $this->assertStringContainsString('valid cookie CSRF', (string) $posted->getContent());
+
+        $loggedOut = $this->request('DELETE', '/session', ['authenticity_token' => $token], $cookies);
+        $this->assertSame(302, $loggedOut->getStatusCode());
+        $newCookies = $this->cookies($loggedOut);
+        $this->assertArrayHasKey('_campfire_session', $newCookies);
+        $payload = $crypto->decryptCookie('_campfire_session', $newCookies['_campfire_session']);
+        $this->assertNotSame($token, $payload['_csrf_token']);
+        $removed = array_values(array_filter($loggedOut->headers->getCookies(), fn ($cookie) => $cookie->getName() === 'session_token'));
+        $this->assertCount(1, $removed);
+        $this->assertTrue($removed[0]->isCleared());
+        $revoked = $this->request('GET', $path, [], $cookies);
+        $this->assertSame(302, $revoked->getStatusCode());
+    }
+
+    public function test_foreign_mention_and_blob_changes_are_fresh_in_the_next_worker_request(): void
+    {
+        $foreign = new \PDO('sqlite:'.$this->dir.'/production.sqlite3');
+        $now = gmdate('Y-m-d H:i:s.000000');
+        $foreign->exec("INSERT INTO active_storage_blobs (key, filename, service_name, byte_size, created_at) VALUES ('fixture-blob-key', 'original.txt', 'local', 3, '$now')");
+        $blob = (int) $foreign->lastInsertId();
+        $crypto = $this->worker->application()->make(RailsCrypto::class);
+        $body = '<p><action-text-attachment sgid="'.$crypto->sgid($this->users['bob']['id']).'"></action-text-attachment> <action-text-attachment sgid="'.$crypto->sgid($blob, 'ActiveStorage::Blob').'"></action-text-attachment></p>';
+        $foreign->exec("INSERT INTO messages (client_message_id, creator_id, room_id, created_at, updated_at) VALUES ('worker-richtext', {$this->users['alice']['id']}, {$this->room}, '$now', '$now')");
+        $message = (int) $foreign->lastInsertId();
+        $foreign->prepare("INSERT INTO action_text_rich_texts (name, body, record_type, record_id, created_at, updated_at) VALUES ('body', ?, 'Message', ?, '$now', '$now')")->execute([$body, $message]);
+        $cookies = ['session_token' => $this->sessionCookie($this->users['alice']['id'])];
+        $path = '/rooms/'.$this->room;
+        $before = $this->request('GET', $path, [], $cookies);
+        $this->assertSame(200, $before->getStatusCode());
+        $this->assertStringContainsString('Bob Brown</span>', (string) $before->getContent());
+        $this->assertStringContainsString('original.txt</a>', (string) $before->getContent());
+        $cookies = $this->cookies($before) + $cookies;
+        $foreign->exec("UPDATE users SET name='Foreign Bob' WHERE id={$this->users['bob']['id']}; UPDATE active_storage_blobs SET filename='foreign.txt' WHERE id=$blob");
+        $after = $this->request('GET', $path, [], $cookies);
+        $this->assertSame(200, $after->getStatusCode());
+        $this->assertStringContainsString('Foreign Bob</span>', (string) $after->getContent());
+        $this->assertStringContainsString('foreign.txt</a>', (string) $after->getContent());
+        $this->assertStringNotContainsString('Bob Brown</span>', (string) $after->getContent());
+        $this->assertStringNotContainsString('original.txt</a>', (string) $after->getContent());
     }
 
     private function request(string $method, string $uri, array $parameters = [], array $cookies = []): Response
@@ -218,6 +308,13 @@ final class OctaneWorkerIsolationTest extends TestCase
         $this->assertStringContainsString('<meta name="current-user-id" content="'.$user['id'].'">', $html);
         $this->assertStringContainsString('<meta name="current-user-name" content="'.e($user['name']).'">', $html);
         $this->assertSame(1, substr_count($html, 'name="current-user-id"'));
+    }
+
+    private function assertWriterLockFree(): void
+    {
+        $handle = fopen($this->dir.'/production.sqlite3.lock', 'c');
+        $this->assertTrue(flock($handle, LOCK_EX | LOCK_NB), 'The worker still holds the writer lock.');
+        fclose($handle);
     }
 
     private function assertNoCurrentUser(Response $response): void

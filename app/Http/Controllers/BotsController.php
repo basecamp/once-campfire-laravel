@@ -42,7 +42,8 @@ final class BotsController extends Controller
             $bot = User::create($v + ['role' => 2, 'status' => 0, 'bot_token' => Str::random(12)]);
             foreach (Room::where('type', 'Rooms::Open')->pluck('id') as $room) {
                 Membership::create(['room_id' => $room, 'user_id' => $bot->id, 'involvement' => 'mentions']);
-            }if ($url) {
+            }
+            if ($url) {
                 DB::table('webhooks')->insert(['user_id' => $bot->id, 'url' => $url, 'created_at' => now(), 'updated_at' => now()]);
             }
 
@@ -112,7 +113,8 @@ final class BotsController extends Controller
             app(Broadcasts::class)->room($room->id, $s);
 
             return response()->json(['id' => $b->id, 'content' => $b->content, 'booster' => ['id' => $bot->id, 'name' => $bot->name]], 201);
-        }$b = $m->boosts()->where('booster_id', $bot->id)->findOrFail($boost);
+        }
+        $b = $m->boosts()->where('booster_id', $bot->id)->findOrFail($boost);
         $b->delete();
         app(Broadcasts::class)->room($room->id, app(ChatController::class)->stream('remove', 'boost_'.$boost, ''));
 
@@ -152,7 +154,8 @@ final class BotsController extends Controller
                 $attrs['attachment'] = $r->input('attachment');
             } elseif (! $attrs) {
                 $attrs = ['body' => $r->getContent()];
-            }abort_unless(! empty($attrs['body']) || isset($attrs['attachment']), 422);
+            }
+            abort_unless(! empty($attrs['body']) || isset($attrs['attachment']), 422);
             $m = app(MessageWriter::class)->create($room, $bot, $attrs, true);
             app(ChatEvents::class)->created($m);
 
@@ -165,7 +168,8 @@ final class BotsController extends Controller
             app(Broadcasts::class)->room($room->id, $controller->stream('remove', $target, ''));
 
             return response('', 204);
-        }app(MessageWriter::class)->update($m, $r->input('message', ['body' => $r->getContent()]));
+        }
+        app(MessageWriter::class)->update($m, $r->input('message', ['body' => $r->getContent()]));
 
         return response()->json($controller->json($m->fresh()->load('creator', 'richText')));
     }

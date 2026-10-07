@@ -11,7 +11,21 @@ final class RichTextRenderer
 
     private \HTMLPurifier $storagePurifier;
 
+    /** Purifiers are stateless between calls and expensive to build, so each worker keeps one pair. */
+    private static ?\HTMLPurifier $sharedPurifier = null;
+
+    private static ?\HTMLPurifier $sharedStoragePurifier = null;
+
+    /** Attachment records resolved during this request or job. */
+    private array $records = [];
+
     public function __construct()
+    {
+        $this->purifier = self::$sharedPurifier ??= self::purifier(false);
+        $this->storagePurifier = self::$sharedStoragePurifier ??= self::purifier(true);
+    }
+
+    private static function purifier(bool $storage): \HTMLPurifier
     {
         $make = function (bool $storage) {
             $c = \HTMLPurifier_Config::createDefault();
@@ -35,8 +49,8 @@ final class RichTextRenderer
 
             return new \HTMLPurifier($c);
         };
-        $this->purifier = $make(false);
-        $this->storagePurifier = $make(true);
+
+        return $make($storage);
     }
 
     public function storage(string $body): string
@@ -69,19 +83,21 @@ final class RichTextRenderer
             $sgid = $node->getAttribute('sgid');
             $gid = app(RailsCrypto::class)->verifySgid($sgid);
             if ($gid && $gid['model'] === 'User') {
-                $u = User::find($gid['id']);
+                $u = $this->find(User::class, $gid['id']);
                 if (! $u) {
                     return '';
-                }if ($mentions !== null) {
+                }
+                if ($mentions !== null) {
                     $mentions[] = $u->id;
-                }if ($plain) {
+                }
+                if ($plain) {
                     return e('@'.$u->name);
                 }
 
                 return '<span class="mention" sgid="'.e($sgid).'">'.e($u->name).'</span>';
             }
             if ($gid && $gid['model'] === 'ActiveStorage::Blob') {
-                $b = Blob::find($gid['id']);
+                $b = $this->find(Blob::class, $gid['id']);
                 if (! $b) {
                     return '';
                 }
@@ -103,6 +119,21 @@ final class RichTextRenderer
 
             return e($node->getAttribute('caption') ?: $node->getAttribute('filename'));
         }, $body);
+    }
+
+    /**
+     * @template T of User|Blob
+     *
+     * @param  class-string<T>  $model
+     * @return T|null
+     */
+    private function find(string $model, int $id): User|Blob|null
+    {
+        if (! array_key_exists($key = $model.':'.$id, $this->records)) {
+            $this->records[$key] = $model::find($id);
+        }
+
+        return $this->records[$key];
     }
 
     public function plain(string $body): string

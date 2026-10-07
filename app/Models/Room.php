@@ -6,7 +6,7 @@ final class Room extends Record
 {
     public function messages()
     {
-        return $this->hasMany(Message::class);
+        return $this->hasMany(Message::class)->chaperone('room');
     }
 
     public function users()
@@ -19,9 +19,14 @@ final class Room extends Record
         return $this->hasMany(Membership::class);
     }
 
+    public function isDirect(): bool
+    {
+        return $this->type === 'Rooms::Direct';
+    }
+
     public function displayName(?User $viewer = null): string
     {
-        if ($this->type !== 'Rooms::Direct') {
+        if (! $this->isDirect()) {
             return $this->name ?? '';
         }
         if ($this->relationLoaded('users')) {

@@ -7,7 +7,13 @@ use Illuminate\Support\Facades\DB;
 
 final class Message extends Record
 {
+    /** Relations needed to render a message partial or its JSON. */
+    public const PRESENTATION = ['creator', 'richText', 'attachment.blob.variantRecords', 'boosts.booster', 'room'];
+
+    /** Like Rails' `belongs_to :room, touch: true`: every message or boost change bumps the room's version. */
     protected $touches = ['room'];
+
+    private static ?array $sounds = null;
 
     public function creator()
     {
@@ -36,7 +42,7 @@ final class Message extends Record
 
     public function scopePresentation($q)
     {
-        return $q->with(['creator', 'richText', 'attachment.blob.variantRecords', 'boosts.booster', 'room']);
+        return $q->with(self::PRESENTATION);
     }
 
     public static function searchFor(User $user, string $query)
@@ -60,5 +66,15 @@ final class Message extends Record
         $plain = app(RichTextRenderer::class)->plain($this->richText?->body ?? '');
 
         return trim($plain) !== '' ? $plain : ($this->attachment?->blob?->filename ?? '');
+    }
+
+    /**
+     * The sound for a `/play <name>` message, if any.
+     */
+    public function sound(): ?array
+    {
+        self::$sounds ??= json_decode(file_get_contents(resource_path('sounds.json')), true);
+
+        return preg_match('/^\/play (\w+)$/', $this->plainText(), $match) ? self::$sounds[$match[1]] ?? null : null;
     }
 }

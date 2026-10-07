@@ -102,7 +102,8 @@ final class StorageController extends Controller
         $path = app(BlobStorage::class)->path($b);
         if (! is_dir(dirname($path))) {
             mkdir(dirname($path), 0755, true);
-        }if (file_put_contents($path, $data) !== strlen($data)) {
+        }
+        if (file_put_contents($path, $data) !== strlen($data)) {
             throw new \RuntimeException('Direct upload failed');
         }
 

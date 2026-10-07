@@ -46,7 +46,8 @@ final class PeopleController extends Controller
         abort_unless(hash_equals(DB::table('accounts')->value('join_code') ?? '', $code), 404);
         if ($r->isMethod('GET')) {
             return view('users.signup', ['action' => '/join/'.$code]);
-        }$a = $r->validate(['user.name' => 'required|string', 'user.email_address' => 'required|email', 'user.password' => 'required|string']);
+        }
+        $a = $r->validate(['user.name' => 'required|string', 'user.email_address' => 'required|email', 'user.password' => 'required|string']);
         $v = $a['user'];
         unset($v['password']);
         $u = DB::transaction(function () use ($a, $v) {
@@ -80,7 +81,8 @@ final class PeopleController extends Controller
             $values = $a['user'] ?? [];
             if (! empty($values['password'])) {
                 $values['password_digest'] = password_hash($values['password'], PASSWORD_BCRYPT);
-            }unset($values['password']);
+            }
+            unset($values['password']);
             $user->update($values);
             if ($r->hasFile('user.avatar')) {
                 app(BlobStorage::class)->attachTo('User', $user->id, 'avatar', $r->file('user.avatar'));
@@ -123,7 +125,8 @@ final class PeopleController extends Controller
             }
 
             return redirect('/account/edit');
-        }$users = User::whereIn('status', $r->user()->role === 1 ? [0, 2] : [0])->where('role', '!=', 2)->orderByRaw('LOWER(name)')->get();
+        }
+        $users = User::whereIn('status', $r->user()->role === 1 ? [0, 2] : [0])->where('role', '!=', 2)->orderByRaw('LOWER(name)')->get();
 
         return view('users.account', compact('account', 'users'));
     }

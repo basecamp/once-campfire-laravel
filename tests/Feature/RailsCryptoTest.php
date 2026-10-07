@@ -30,7 +30,8 @@ final class RailsCryptoTest extends TestCase
         foreach ($this->v['signed_cookies']['generate'] as $v) {
             $this->assertSame($v['value'], $c->verifyCookie($v['name'], $v['raw']));
             $this->assertSame($v['raw'], $c->signCookie($v['name'], $v['value'], $v['expires_at']));
-        }foreach ($this->v['encrypted_cookies']['generate'] as $v) {
+        }
+        foreach ($this->v['encrypted_cookies']['generate'] as $v) {
             $this->assertSame($v['value'], $c->decryptCookie($v['name'], $v['raw']));
         }
     }
@@ -91,7 +92,8 @@ final class RailsCryptoTest extends TestCase
                 $expected = $row['expected'];
                 if ($key === 'signed_ids' && is_string($expected)) {
                     $expected = (int) $expected;
-                }$this->assertSame($expected, $actual, $row['case']);
+                }
+                $this->assertSame($expected, $actual, $row['case']);
             }
         }
     }
@@ -102,7 +104,8 @@ final class RailsCryptoTest extends TestCase
         foreach ($this->v['app_verifiers']['generate'] as $row) {
             if ($row['name'] !== 'ActiveStorage') {
                 continue;
-            }$value = json_decode($row['data_json'], true);
+            }
+            $value = json_decode($row['data_json'], true);
             $this->assertSame($row['message'], $c->appSign($value, $row['purpose'], $row['expires_at']));
             $this->assertSame($value, $c->appVerify($row['message'], $row['purpose']));
         }

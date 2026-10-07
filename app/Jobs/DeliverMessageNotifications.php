@@ -26,11 +26,12 @@ final class DeliverMessageNotifications implements ShouldQueue
             return;
         }
         $mentions = app(RichTextRenderer::class)->mentions($m->richText?->body ?? '');
-        $bots = $m->room->type === 'Rooms::Direct' ? $m->room->users()->where('role', 2)->where('status', 0)->get() : $m->room->users()->where('role', 2)->where('status', 0)->whereIn('users.id', $mentions)->get();
+        $bots = $m->room->isDirect() ? $m->room->users()->where('role', 2)->where('status', 0)->get() : $m->room->users()->where('role', 2)->where('status', 0)->whereIn('users.id', $mentions)->get();
         foreach ($this->webhooks ? $bots : [] as $bot) {
             if ($bot->id === $m->creator_id || ! $m->room->memberships()->where('user_id', $bot->id)->exists()) {
                 continue;
-            }$url = DB::table('webhooks')->where('user_id', $bot->id)->value('url');
+            }
+            $url = DB::table('webhooks')->where('user_id', $bot->id)->value('url');
             if (! $url) {
                 continue;
             }
@@ -61,7 +62,7 @@ final class DeliverMessageNotifications implements ShouldQueue
             }
         }
         $query = DB::table('push_subscriptions as p')->join('memberships as ms', 'ms.user_id', '=', 'p.user_id')->where('ms.room_id', $m->room_id)->where('ms.user_id', '!=', $m->creator_id)->where(fn ($q) => $q->whereNull('ms.connected_at')->orWhere('ms.connected_at', '<', now()->subMinute()))->where(fn ($q) => $q->where('ms.involvement', 'everything')->orWhere(fn ($q) => $q->where('ms.involvement', 'mentions')->whereIn('ms.user_id', $mentions)))->select('p.*');
-        $payload = ['title' => $m->room->type === 'Rooms::Direct' ? $m->creator->name : $m->room->name, 'body' => ($m->room->type === 'Rooms::Direct' ? '' : $m->creator->name.': ').$m->plainText(), 'path' => '/rooms/'.$m->room_id];
+        $payload = ['title' => $m->room->isDirect() ? $m->creator->name : $m->room->name, 'body' => ($m->room->isDirect() ? '' : $m->creator->name.': ').$m->plainText(), 'path' => '/rooms/'.$m->room_id];
         foreach ($query->get() as $sub) {
             DeliverPush::dispatch((array) $sub, $payload);
         }

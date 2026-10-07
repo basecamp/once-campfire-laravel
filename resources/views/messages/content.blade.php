@@ -1,9 +1,10 @@
 @php($assets = app(\App\Support\Assets::class))
 @php($permalink = "/rooms/".$message->room_id."/@".$message->id)
 @php($dom = "message_".$message->client_message_id)
+@php($createdAt ??= $message->created_at)
 <div class="message__body"><div class="message__body-content"><div class="message__meta"><h3 class="message__heading">
 <span class="message__author" title="{{ trim($message->creator->name.' – '.$message->creator->bio,' –') }}"><strong data-reply-target="author">{{ $message->creator->name }}</strong></span>
-<a class="message__permalink" href="{{ $permalink }}" target="_top"><time datetime="{{ $message->created_at->toISOString() }}" class="message__timestamp" data-local-time-target="time">{{ $message->created_at->format('g:i A') }}</time></a>
+<a class="message__permalink" href="{{ $permalink }}" target="_top"><time datetime="{{ $createdAt->toISOString() }}" class="message__timestamp" data-local-time-target="time">{{ $createdAt->format('g:i A') }}</time></a>
 <span class="message__room"><a href="{{ $permalink }}" target="_top" data-reply-target="link">{{ $message->room->displayName() }}</a></span>
 </h3>
 <div class="message__actions" data-controller="soft-keyboard">

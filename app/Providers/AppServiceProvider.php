@@ -7,6 +7,8 @@ use App\Support\BlobStorage;
 use App\Support\RailsCrypto;
 use App\Support\ResponseCache;
 use App\Support\RichTextRenderer;
+use App\Support\SQLiteConnection;
+use App\Support\SQLiteConnector;
 use App\Support\SQLiteGrammar;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Events\ConnectionEstablished;
@@ -21,7 +23,9 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        $this->app->singleton(RichTextRenderer::class);
+        $this->app->bind('db.connector.sqlite', SQLiteConnector::class);
+        Connection::resolverFor('sqlite', fn ($pdo, $database, $prefix, $config) => new SQLiteConnection($pdo, $database, $prefix, $config));
+        $this->app->scoped(RichTextRenderer::class);
         $this->app->singleton(Assets::class);
         // Holds the files written by the current request's open transaction: one per request.
         $this->app->scoped(BlobStorage::class);

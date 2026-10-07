@@ -26,7 +26,7 @@ final class SessionController extends Controller
         if (! $user || ! $user->password_digest || ! password_verify($r->input('password', ''), $user->password_digest)) {
             return response()->view('sessions.new', ['error' => true], 401);
         }
-        $r->session()->regenerate();
+        $r->session()->regenerate(true);
 
         return $this->start($r, $user);
     }

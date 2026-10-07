@@ -17,11 +17,13 @@ final class LinksController extends Controller
             $u = parse_url($url);
             if (isset($u['user']) || isset($u['pass'])) {
                 return response('', 204);
-            }$host = $u['host'];
+            }
+            $host = $u['host'];
             $ips = gethostbynamel($host);
             if (! $ips) {
                 return response('', 204);
-            }foreach ($ips as $ip) {
+            }
+            foreach ($ips as $ip) {
                 if (! filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
                     return response('', 204);
                 }
@@ -39,13 +41,15 @@ final class LinksController extends Controller
             }
             if (! $reply->successful() || strlen($reply->body()) > 2 * 1024 * 1024) {
                 return response('', 204);
-            }$doc = new \DOMDocument;
+            }
+            $doc = new \DOMDocument;
             @$doc->loadHTML($reply->body(), LIBXML_NONET);
             break;
         }
         if (! $doc) {
             return response('', 204);
-        }$values = [];
+        }
+        $values = [];
         foreach ($doc->getElementsByTagName('meta') as $meta) {
             $key = $meta->getAttribute('property');
             if (str_starts_with($key, 'og:')) {

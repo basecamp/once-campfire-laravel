@@ -22,13 +22,15 @@ final class Media
         $directory = config('campfire.files').'/variants/'.$blob->key;
         if (! is_dir($directory)) {
             mkdir($directory, 0755, true);
-        }$path = $directory.'/'.$key.'.'.$format;
+        }
+        $path = $directory.'/'.$key.'.'.$format;
         $lock = fopen($path.'.lock', 'c');
         flock($lock, LOCK_EX);
         try {
             if (is_file($path)) {
                 return $path;
-            }$temporary = $path.'.tmp.'.$format;
+            }
+            $temporary = $path.'.tmp.'.$format;
             if (str_starts_with($blob->content_type ?? '', 'video/')) {
                 $preview = $path.'.source.png';
                 $p = new Process(['ffmpeg', '-nostdin', '-y', '-protocol_whitelist', 'file,pipe', '-i', $source, '-vf', 'thumbnail,scale='.$w.':'.$h.':force_original_aspect_ratio=decrease', '-frames:v', '1', $preview]);

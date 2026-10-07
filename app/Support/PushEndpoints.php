@@ -16,13 +16,15 @@ final class PushEndpoints
             if ($host === $domain || str_ends_with($host, '.'.$domain)) {
                 $allowed = true;
             }
-        }if (! $allowed) {
+        }
+        if (! $allowed) {
             return null;
         }
         $ips = gethostbynamel($host);
         if (! $ips) {
             return null;
-        }foreach ($ips as $ip) {
+        }
+        foreach ($ips as $ip) {
             if (! filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
                 return null;
             }

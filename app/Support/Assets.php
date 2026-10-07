@@ -6,6 +6,8 @@ final class Assets
 {
     private array $manifest;
 
+    private ?string $head = null;
+
     public function __construct()
     {
         $this->manifest = json_decode(file_get_contents(public_path('assets/.manifest.json')), true) ?: [];
@@ -17,6 +19,11 @@ final class Assets
     }
 
     public function head(): string
+    {
+        return $this->head ??= $this->buildHead();
+    }
+
+    private function buildHead(): string
     {
         $imports = json_decode(file_get_contents(resource_path('importmap.json')), true);
         foreach ($imports['imports'] as &$path) {

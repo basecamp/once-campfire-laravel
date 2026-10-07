@@ -54,9 +54,12 @@ final class ResponseCacheTest extends TestCase
         }
     }
 
-    private function csrf(string $token): void
+    private function csrf(string $token): string
     {
-        $this->withUnencryptedCookie('_campfire_session', app(RailsCrypto::class)->encryptCookie('_campfire_session', ['_csrf_token' => $token, 'session_id' => 'cache-test']));
+        $cookie = app(RailsCrypto::class)->encryptCookie('_campfire_session', ['_csrf_token' => $token, 'session_id' => 'cache-test']);
+        $this->withUnencryptedCookie('_campfire_session', $cookie);
+
+        return $cookie;
     }
 
     public function test_hot_body_reuses_rendering_but_keeps_fresh_tokens_cookies_and_literal_text(): void
@@ -70,13 +73,14 @@ final class ResponseCacheTest extends TestCase
         });
         $this->csrf($first);
         $this->get('/rooms/'.$this->room->id)->assertOk()->assertSee('content="'.$first.'"', false);
-        $this->csrf($second);
+        $secondCookie = $this->csrf($second);
         $response = $this->get('/rooms/'.$this->room->id)->assertOk();
         $response->assertSee('content="'.$second.'"', false)->assertSee($first, false);
         $this->assertSame(1, $renders);
         $this->assertSame($second, session()->token());
         $response->assertCookie('last_room');
-        $payload = app(RailsCrypto::class)->decryptCookie('_campfire_session', $response->getCookie('_campfire_session', false)->getValue());
+        $response->assertCookieMissing('_campfire_session');
+        $payload = app(RailsCrypto::class)->decryptCookie('_campfire_session', $secondCookie);
         $this->assertSame($second, $payload['_csrf_token']);
     }
 

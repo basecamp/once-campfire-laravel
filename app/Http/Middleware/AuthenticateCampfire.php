@@ -15,7 +15,8 @@ final class AuthenticateCampfire
     {
         // Native fragment renders need the same pre-authentication snapshot as page hits.
         $request->attributes->set('campfire.response_epoch', app(ResponseCache::class)->epoch());
-        if (DB::table('bans')->where('ip_address', $request->ip())->exists()) {
+        // Rails only rejects banned addresses on unsafe requests (BlockBannedRequests#safe_request?).
+        if (! $request->isMethodSafe() && DB::table('bans')->where('ip_address', $request->ip())->exists()) {
             abort(403);
         }
         $key = $request->input('bot_key');
@@ -48,8 +49,9 @@ final class AuthenticateCampfire
         $request->attributes->set('campfire.session_id', $sessionId);
         view()->share('currentUser', $user);
         $request->setUserResolver(fn () => $user);
-        if (strtotime($lastActive) < time() - 3600) {
-            DB::table('sessions')->where('id', $sessionId)->update(['last_active_at' => now(), 'updated_at' => now(), 'user_agent' => $request->userAgent(), 'ip_address' => $request->ip()]);
+        if (strtotime((string) $lastActive) < time() - 3600) {
+            $now = now();
+            DB::table('sessions')->where('id', $sessionId)->update(['last_active_at' => $now, 'updated_at' => $now, 'user_agent' => $request->userAgent(), 'ip_address' => $request->ip()]);
         }
 
         return $next($request);

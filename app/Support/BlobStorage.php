@@ -116,7 +116,8 @@ final class BlobStorage
         $path = $this->path($blob);
         if (! is_dir(dirname($path))) {
             mkdir(dirname($path), 0755, true);
-        }if (file_put_contents($path, $data) !== strlen($data)) {
+        }
+        if (file_put_contents($path, $data) !== strlen($data)) {
             throw new \RuntimeException('Upload write failed');
         }
         $metadata = ['identified' => true, 'analyzed' => true];

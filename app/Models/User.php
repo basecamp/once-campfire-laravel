@@ -10,6 +10,8 @@ final class User extends Record
 {
     protected $hidden = ['password_digest', 'bot_token'];
 
+    private ?string $avatarToken = null;
+
     public function rooms()
     {
         return $this->belongsToMany(Room::class, 'memberships');
@@ -32,7 +34,7 @@ final class User extends Record
 
     public function avatarToken(): string
     {
-        return app(RailsCrypto::class)->signedId($this->id, 'User', 'avatar');
+        return $this->avatarToken ??= app(RailsCrypto::class)->signedId($this->id, 'User', 'avatar');
     }
 
     public function avatarUrl(): string

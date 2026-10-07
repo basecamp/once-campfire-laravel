@@ -112,7 +112,8 @@ final class RoomsController extends Controller
         DB::transaction(function () use ($room) {
             foreach ($room->messages()->get() as $m) {
                 app(MessageWriter::class)->destroy($m);
-            }$room->memberships()->delete();
+            }
+            $room->memberships()->delete();
             $room->delete();
         });
 

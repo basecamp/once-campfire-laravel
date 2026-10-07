@@ -5,7 +5,6 @@ use App\Octane\RollBackOpenTransactions;
 use App\Support\Assets;
 use App\Support\RailsCrypto;
 use App\Support\ResponseCache;
-use App\Support\RichTextRenderer;
 use Laravel\Octane\Contracts\OperationTerminated;
 use Laravel\Octane\Events\RequestHandled;
 use Laravel\Octane\Events\RequestReceived;
@@ -102,13 +101,13 @@ return [
     /*
      * Resolved once per worker and shared by every request. These hold no request state:
      * RailsCrypto caches PBKDF2-derived keys (re-derived if the secret changes), Assets the
-     * digest manifest, RichTextRenderer two configured HTMLPurifier instances.
+     * digest manifest. RichTextRenderer is scoped (it memoizes mention and blob lookups per
+     * request) and keeps its two HTMLPurifier instances in statics instead.
      */
     'warm' => [
         ...Octane::defaultServicesToWarm(),
         RailsCrypto::class,
         Assets::class,
-        RichTextRenderer::class,
         ResponseCache::class,
     ],
 

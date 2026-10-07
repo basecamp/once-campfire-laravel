@@ -12,6 +12,7 @@ final class RailsCsrf extends PreventRequestForgery
     {
         $crypto = app(RailsCrypto::class);
         $payload = $crypto->decryptCookie('_campfire_session', $request->cookie('_campfire_session'));
+        $originalPayload = is_array($payload) ? $payload : null;
         if (is_array($payload)) {
             if (isset($payload['_csrf_token'])) {
                 $request->session()->put('_token', $payload['_csrf_token']);
@@ -41,6 +42,10 @@ final class RailsCsrf extends PreventRequestForgery
             $payload['return_to_after_authenticating'] = $request->session()->get('return_to');
         } else {
             unset($payload['return_to_after_authenticating']);
+        }
+        // Opt 3: skip re-encrypt/setCookie when plaintext payload is unchanged.
+        if ($originalPayload !== null && $payload == $originalPayload) {
+            return $response;
         }
         $response->headers->setCookie(cookie('_campfire_session', $crypto->encryptCookie('_campfire_session', $payload), 0, '/', null, $request->isSecure(), true, false, 'lax'));
 
