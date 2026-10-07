@@ -245,6 +245,25 @@ final class OctaneWorkerIsolationTest extends TestCase
         $this->assertSame(302, $revoked->getStatusCode());
     }
 
+    public function test_raw_statement_transactions_are_rolled_back_when_the_worker_request_ends(): void
+    {
+        $connection = $this->worker->application()->make('db')->connection();
+        $connection->affectingStatement('BEGIN IMMEDIATE TRANSACTION');
+        try {
+            $connection->table('users')->where('id', $this->users['bob']['id'])->update(['name' => 'Raw leaked name']);
+            $this->assertSame(0, $connection->transactionLevel());
+            $this->request('GET', '/up');
+            $this->assertFalse($connection->getPdo()->inTransaction());
+            $this->assertWriterLockFree();
+            $name = (new \PDO('sqlite:'.$this->dir.'/production.sqlite3'))->query('SELECT name FROM users WHERE id = '.$this->users['bob']['id'])->fetchColumn();
+            $this->assertSame('Bob Brown', $name);
+        } finally {
+            if ($connection->getPdo()->inTransaction()) {
+                $connection->getPdo()->rollBack();
+            }
+        }
+    }
+
     public function test_foreign_mention_and_blob_changes_are_fresh_in_the_next_worker_request(): void
     {
         $foreign = new \PDO('sqlite:'.$this->dir.'/production.sqlite3');

@@ -7,9 +7,9 @@ namespace App\Support;
  */
 interface LocksWrites
 {
-    public function lockOn(?string $path): void;
+    public function lockOn(?string $path, int $timeoutMilliseconds = 10000): void;
 
-    /** Blocks until this process may write; false when already held or no lock file is configured. */
+    /** Waits up to SQLite's busy timeout; false when held or no lock file is configured. */
     public function lock(): bool;
 
     public function unlock(): void;

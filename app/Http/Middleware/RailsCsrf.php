@@ -44,7 +44,7 @@ final class RailsCsrf extends PreventRequestForgery
             unset($payload['return_to_after_authenticating']);
         }
         // Opt 3: skip re-encrypt/setCookie when plaintext payload is unchanged.
-        if ($originalPayload !== null && $payload == $originalPayload) {
+        if ($originalPayload !== null && $payload === $originalPayload) {
             return $response;
         }
         $response->headers->setCookie(cookie('_campfire_session', $crypto->encryptCookie('_campfire_session', $payload), 0, '/', null, $request->isSecure(), true, false, 'lax'));

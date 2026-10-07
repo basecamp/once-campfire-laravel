@@ -44,8 +44,8 @@ with four hardware cores allocated to each app.
 
 - Search selects the newest 100 matching messages by insertion ID, then displays them in ID order. Backdated messages can appear in a different order from the original Rails app.
 
-- Native writers queue on a `.lock` file beside each SQLite database instead of polling SQLite's
-  busy handler. Other SQLite writers still wait through the busy timeout.
+- Native writers queue on a `.lock` file beside the canonical SQLite database, up to its
+  configured busy timeout. Other SQLite writers use SQLite's busy handler.
 
 - Unchanged Rails session payloads reuse their encrypted cookie. Login, logout and
   return-to changes reissue it.

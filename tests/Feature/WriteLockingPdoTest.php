@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Support\SQLiteConnector;
 use Illuminate\Database\QueryException;
 use Illuminate\Database\SQLiteConnection;
 use Illuminate\Support\Facades\DB;
@@ -178,6 +179,115 @@ final class WriteLockingPdoTest extends TestCase
         }
         $this->assertLockFree();
         $this->assertSame(0, $connection->table('children')->count());
+    }
+
+    public function test_writer_wait_uses_the_configured_busy_timeout_and_can_retry_after_release(): void
+    {
+        config(['database.connections.locked.busy_timeout' => 25]);
+        DB::purge('locked');
+        $connection = $this->connection();
+        $holder = fopen($this->database.'.lock', 'c');
+        $this->assertTrue(flock($holder, LOCK_EX | LOCK_NB));
+        $start = hrtime(true);
+        try {
+            try {
+                $connection->beginTransaction();
+                $this->fail('A held writer lock must time out.');
+            } catch (PDOException $exception) {
+                $this->assertSame(5, $exception->errorInfo[1]);
+            }
+            $elapsed = (hrtime(true) - $start) / 1000000000;
+            $this->assertGreaterThanOrEqual(0.02, $elapsed);
+            $this->assertLessThan(1.0, $elapsed);
+            $this->assertFalse($connection->getPdo()->inTransaction());
+            $this->assertSame(0, $connection->transactionLevel());
+        } finally {
+            fclose($holder);
+        }
+        $connection->beginTransaction();
+        $this->assertLockHeld();
+        $connection->rollBack();
+        $this->assertLockFree();
+    }
+
+    public function test_aliases_of_the_opened_database_share_one_writer_lock(): void
+    {
+        $alias = $this->dir.'/alias.sqlite3';
+        symlink($this->database, $alias);
+        config(['database.connections.alias' => ['database' => $alias, 'busy_timeout' => 25] + config('database.connections.sqlite')]);
+        $this->connection()->beginTransaction();
+        $other = DB::connection('alias');
+        try {
+            try {
+                $other->beginTransaction();
+                $this->fail('The symlinked connection must wait on the same lock.');
+            } catch (PDOException $exception) {
+                $this->assertStringContainsString('writer lock timeout', $exception->getMessage());
+            }
+            $this->assertFalse(is_file($alias.'.lock'));
+            $this->assertTrue($this->connection()->getPdo()->inTransaction());
+            $this->assertFalse($other->getPdo()->inTransaction());
+        } finally {
+            $this->connection()->rollBack();
+            DB::purge('alias');
+        }
+        $this->assertLockFree();
+    }
+
+    public function test_relative_database_paths_use_the_framework_resolved_absolute_lock_path(): void
+    {
+        $relative = 'storage/framework/testing/lock-relative-'.bin2hex(random_bytes(6)).'/application.sqlite3';
+        $database = base_path($relative);
+        mkdir(dirname($database), 0755, true);
+        touch($database);
+        $previous = getcwd();
+        $pdo = null;
+        chdir($this->dir);
+        try {
+            $pdo = (new SQLiteConnector)->connect(['database' => $relative] + config('database.connections.sqlite'));
+            $pdo->beginTransaction();
+            $this->assertTrue(is_file($database.'.lock'));
+            $other = fopen($database.'.lock', 'r');
+            try {
+                $this->assertFalse(flock($other, LOCK_EX | LOCK_NB));
+            } finally {
+                fclose($other);
+            }
+        } finally {
+            if ($pdo?->inTransaction()) {
+                $pdo->rollBack();
+            }
+            $pdo = null;
+            chdir($previous);
+            foreach ([$database, $database.'.lock', $database.'-wal', $database.'-shm'] as $path) {
+                if (is_file($path)) {
+                    unlink($path);
+                }
+            }
+            rmdir(dirname($database));
+        }
+    }
+
+    public function test_raw_begin_keeps_the_writer_lock_until_raw_commit_or_rollback(): void
+    {
+        $connection = $this->connection();
+        foreach (['affectingStatement', 'statement', 'unprepared'] as $method) {
+            $connection->$method('BEGIN IMMEDIATE TRANSACTION');
+            try {
+                $this->assertSame(0, $connection->transactionLevel());
+                $this->assertTrue($connection->getPdo()->inTransaction());
+                $this->assertLockHeld();
+                $connection->table('things')->insert(['name' => $method]);
+            } finally {
+                $connection->$method('ROLLBACK');
+            }
+            $this->assertLockFree();
+            $this->assertSame(['taken'], $connection->table('things')->pluck('name')->all());
+        }
+        $connection->affectingStatement('BEGIN IMMEDIATE TRANSACTION');
+        $this->assertLockHeld();
+        $connection->affectingStatement('COMMIT');
+        $this->assertLockFree();
     }
 
     private function connection(): SQLiteConnection

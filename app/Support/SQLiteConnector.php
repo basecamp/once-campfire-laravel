@@ -11,9 +11,11 @@ final class SQLiteConnector extends BaseConnector
 {
     public function connect(array $config)
     {
+        $config['database'] = $this->parseDatabasePath($config['database']);
         $pdo = parent::connect($config);
         if ($pdo instanceof LocksWrites) {
-            $pdo->lockOn(self::lockPath($config['database'] ?? ''));
+            $timeout = (int) $pdo->query('PRAGMA busy_timeout')->fetchColumn();
+            $pdo->lockOn(self::lockPath($config['database']), $timeout);
         }
 
         return $pdo;

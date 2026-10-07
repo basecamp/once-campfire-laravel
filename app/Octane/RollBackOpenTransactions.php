@@ -2,6 +2,8 @@
 
 namespace App\Octane;
 
+use PDO;
+
 /**
  * Database connections outlive requests in a worker. DB::transaction() always commits or rolls
  * back, but a request that dies between a manual beginTransaction() and its commit would leave
@@ -18,6 +20,8 @@ final class RollBackOpenTransactions
         foreach ($event->sandbox->make('db')->getConnections() as $connection) {
             if ($connection->transactionLevel() > 0) {
                 $connection->rollBack(0);
+            } elseif (($pdo = $connection->getRawPdo()) instanceof PDO && $pdo->inTransaction()) {
+                $pdo->rollBack();
             }
         }
     }

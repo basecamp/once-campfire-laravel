@@ -292,6 +292,24 @@ final class ResponseCacheTest extends TestCase
         $this->get('/rooms/'.$this->room->id, ['If-None-Match' => 'unmatched'])->assertOk()->assertSee('detached fresh')->assertDontSee('detached original');
     }
 
+    public function test_raw_sql_transaction_drafts_never_enter_the_committed_page_or_fragment_cache(): void
+    {
+        app(MessageWriter::class)->create($this->room, $this->user, ['body' => 'raw committed body'], false);
+        $path = '/rooms/'.$this->room->id;
+        $this->get($path)->assertOk()->assertSee('raw committed body');
+        DB::affectingStatement('BEGIN IMMEDIATE TRANSACTION');
+        try {
+            DB::table('action_text_rich_texts')->update(['body' => 'raw transaction draft']);
+            $this->get($path)->assertOk()->assertSee('raw transaction draft')->assertDontSee('raw committed body');
+            $this->get($path.'?cold=1')->assertOk()->assertSee('raw transaction draft');
+            $this->get($path, ['If-None-Match' => 'unmatched'])->assertOk()->assertSee('raw transaction draft');
+        } finally {
+            DB::affectingStatement('ROLLBACK');
+        }
+        $this->get($path)->assertOk()->assertSee('raw committed body')->assertDontSee('raw transaction draft');
+        $this->get($path.'?cold=1')->assertOk()->assertSee('raw committed body')->assertDontSee('raw transaction draft');
+    }
+
     public function test_native_fragment_reuse_is_origin_scoped_and_rejects_mid_render_commits(): void
     {
         app(MessageWriter::class)->create($this->room, $this->user, ['body' => 'message'], false);

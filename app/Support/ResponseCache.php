@@ -28,7 +28,7 @@ final class ResponseCache
             return null;
         }
         // Uncommitted presentations must never enter the committed generation.
-        if (DB::connection()->transactionLevel() > 0) {
+        if (DB::connection()->transactionLevel() > 0 || DB::connection()->getPdo()->inTransaction()) {
             return null;
         }
         try {

@@ -23,6 +23,16 @@ final class SQLiteConnection extends BaseConnection
         return $this->serialized(fn () => parent::affectingStatement($query, $bindings));
     }
 
+    public function statement($query, $bindings = [])
+    {
+        return $this->serialized(fn () => parent::statement($query, $bindings));
+    }
+
+    public function unprepared($query)
+    {
+        return $this->serialized(fn () => parent::unprepared($query));
+    }
+
     protected function runQueryCallback($query, $bindings, Closure $callback)
     {
         try {
