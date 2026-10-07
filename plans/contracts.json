@@ -103,11 +103,11 @@
     },
     "response_cache": {
       "status": "partially_verified",
-      "evidence": "Native whole-response regressions cover hot reuse, current tokens/cookies and literal text, local and foreign SQLite commits, unversioned nested presentation changes, session/membership revocation, pre-auth and mid-render admission epochs, JSON/conditional bypass, disable and bounded eviction. Full native suite: 43 tests, 713 assertions. Fresh production browser and performance checks for this new cache remain pending."
+      "evidence": "Native page and fragment regressions cover hot reuse, current tokens/cookies and literal text, local and foreign SQLite commits, unversioned body/creator/boost changes on conditional, flash, cache-disabled and broadcast paths, session/membership revocation, pre-auth and mid-render admission epochs, origin separation, detached rendering and transaction rollback. Pages and native fragments share one bounded worker cache; no external generation namespaces accumulate. Full native suite: 49 tests, 767 assertions. Fresh production browser and performance checks for this final cache remain pending."
     }
   },
   "verification": {
-    "phpunit": "43 tests, 713 assertions; pinned production-compatible PHP toolchain with libvips",
+    "phpunit": "49 tests, 767 assertions; pinned production-compatible PHP toolchain with libvips",
     "independent_http": "18 checks passed",
     "independent_cable_security": "3 checks passed",
     "claude": "Requirements/architecture reviewed; source export blocked by automatic approval review.",
@@ -117,6 +117,6 @@
     "benchmark_provenance": "HTTP runtime 112a66f; socket runtime 87b332b. Diff contains only socket admission code, its tests and ledger; all measured HTTP paths unchanged. Production image runtime hashes independently verified.",
     "frankenphp_smoke": "Parity seed on the production image, worker and classic modes as root, worker mode as --user 1000:1000: /up, login form CSRF, POST /session 302 with session_token, room page with stream sources, messages page, sidebar, search, image avatar (X-Accel-Redirect), turbo-stream post, bad-token post rejected, multipart JPEG upload and thumbnail, /cable welcome, subscription and broadcast. Worker mode admits 1000 sockets and delivers every paced message to all of them.",
     "sqlite_synchronous": "Both connections now use synchronous=NORMAL in WAL mode, as Rails' SQLite3Adapter::DEFAULT_PRAGMAS do. Before, synchronous=FULL held every write lock across an fsync (4-14 ms per commit on the test volume). SQLite's backing-off busy handler then made a request inserting a job wait up to 1-3 s behind the queue worker's commits; profiled, the jobs insert took 250-1,068 ms, and with the queue worker stopped the waits vanished. Single client posting 300 messages: upstream PHP-FPM image 14 -> 58 posts/s (p99 802 -> 69 ms); FrankenPHP worker mode 14 -> 199 posts/s (p99 1,369 -> 38 ms).",
-    "authentication_join": "Fresh indexed session/user join on every request, extracted from Jack Ellis PR #2 at 661bd108; preserves pre-auth response-cache epoch capture and current session ID. Warm reads execute one auth join; native regressions cover foreign role/status/session-user changes and revocation, plus commits racing authentication and rendering. No authentication row is cached. Full native suite: 43 tests, 713 assertions."
+    "authentication_join": "Fresh indexed session/user join on every request, extracted from Jack Ellis PR #2 at 661bd108; preserves pre-auth response-cache epoch capture and current session ID. Warm reads execute one auth join; native regressions cover foreign role/status/session-user changes and revocation, plus commits racing authentication and rendering. No authentication row is cached. Full native suite: 49 tests, 767 assertions."
   }
 }

@@ -13,9 +13,8 @@ final class AuthenticateCampfire
 {
     public function handle(Request $request, Closure $next)
     {
-        if (CacheResponses::eligible($request)) {
-            $request->attributes->set('campfire.response_epoch', app(ResponseCache::class)->epoch());
-        }
+        // Native fragment renders need the same pre-authentication snapshot as page hits.
+        $request->attributes->set('campfire.response_epoch', app(ResponseCache::class)->epoch());
         if (DB::table('bans')->where('ip_address', $request->ip())->exists()) {
             abort(403);
         }

@@ -6,7 +6,7 @@ use Illuminate\Support\Facades\DB;
 use PDO;
 use PDOException;
 
-// Body cache owned by one persistent Octane worker. A separate SQLite connection
+// Page and fragment cache owned by one persistent Octane worker. A separate SQLite connection
 // observes every committed write, including this worker's and other implementations'.
 final class ResponseCache
 {
@@ -25,6 +25,10 @@ final class ResponseCache
         if ($this->limit() === 0) {
             $this->clear();
 
+            return null;
+        }
+        // Uncommitted presentations must never enter the committed generation.
+        if (DB::connection()->transactionLevel() > 0) {
             return null;
         }
         try {
@@ -58,7 +62,21 @@ final class ResponseCache
 
     public function get(string $key, int $epoch): ?array
     {
-        if ($this->epoch() !== $epoch || ! isset($this->entries[$key])) {
+        return $this->many([$key], $epoch)[$key];
+    }
+
+    public function many(array $keys, int $epoch): array
+    {
+        if ($this->epoch() !== $epoch) {
+            return array_fill_keys($keys, null);
+        }
+
+        return array_combine($keys, array_map($this->entry(...), $keys));
+    }
+
+    private function entry(string $key): ?array
+    {
+        if (! isset($this->entries[$key])) {
             return null;
         }
         $entry = $this->entries[$key];

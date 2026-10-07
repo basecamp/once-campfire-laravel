@@ -29,8 +29,9 @@ with four hardware cores allocated to each app.
 
 ## Known differences
 
-- Authenticated room, message-list, sidebar and search HTML bodies use a bounded
-  cache: 64 MiB per persistent Octane worker, disabled with `CAMPFIRE_RESPONSE_CACHE_MB=0`.
+- Authenticated room, message-list, sidebar and search HTML bodies share a bounded
+  cache with message and boost fragments: 64 MiB per persistent Octane worker,
+  disabled with `CAMPFIRE_RESPONSE_CACHE_MB=0`.
   Authorization, CSRF and cookies stay fresh; SQLite commits from any writer
   invalidate cached bodies. JSON and conditional requests retain their native paths.
 
