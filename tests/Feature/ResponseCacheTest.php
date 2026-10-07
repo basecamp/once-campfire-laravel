@@ -102,12 +102,13 @@ final class ResponseCacheTest extends TestCase
     {
         $changed = false;
         DB::listen(function ($query) use (&$changed): void {
-            if (! $changed && str_contains($query->sql, '"users"') && str_contains($query->sql, 'select')) {
+            if (! $changed && str_contains($query->sql, 'FROM sessions s JOIN users u')) {
                 $changed = true;
                 $this->foreign->exec("UPDATE users SET name='After auth'");
             }
         });
         $this->get('/rooms/'.$this->room->id)->assertOk();
+        $this->assertTrue($changed, 'The foreign commit must occur after the authentication snapshot.');
         $this->get('/rooms/'.$this->room->id)->assertOk()->assertSee('After auth');
         $renders = 0;
         View::composer('rooms.show', function () use (&$renders): void {
@@ -119,6 +120,41 @@ final class ResponseCacheTest extends TestCase
         $this->get('/rooms/'.$this->room->id)->assertOk();
         $this->get('/rooms/'.$this->room->id)->assertOk()->assertSee('After render');
         $this->assertSame(2, $renders);
+    }
+
+    public function test_joined_authentication_reads_once_and_keeps_fresh_session_user_and_role(): void
+    {
+        $path = '/rooms/'.$this->room->id;
+        $this->get($path)->assertOk();
+        DB::enableQueryLog();
+        DB::flushQueryLog();
+        $this->get($path)->assertOk();
+        $queries = DB::getQueryLog();
+        DB::disableQueryLog();
+        $auth = array_filter($queries, fn ($query) => str_contains($query['query'], 'FROM sessions s JOIN users u'));
+        $this->assertCount(1, $auth);
+        $this->assertSame(['cache-test'], array_values($auth)[0]['bindings']);
+        $session = DB::table('sessions')->where('token', 'cache-test')->first();
+        $this->assertSame($session->id, request()->attributes->get('campfire.session_id'));
+        $this->assertSame($this->user->id, request()->user()->id);
+        $this->assertNull(request()->user()->getAttribute('campfire_session_id'));
+
+        $this->foreign->exec('UPDATE users SET role=2');
+        $this->get($path)->assertForbidden();
+        $this->foreign->exec('UPDATE users SET role=1');
+        foreach ([1, 2] as $status) {
+            $this->get($path)->assertOk();
+            $this->foreign->exec('UPDATE users SET status='.$status);
+            $this->get($path)->assertRedirect('/session/new');
+            $this->foreign->exec('UPDATE users SET status=0');
+        }
+        $other = User::create(['name' => 'Another viewer', 'role' => 0, 'status' => 0]);
+        Membership::create(['room_id' => $this->room->id, 'user_id' => $other->id]);
+        $this->foreign->exec('UPDATE sessions SET user_id='.$other->id);
+        $this->get($path)->assertOk()->assertSee('content="Another viewer"', false);
+        $this->assertSame($other->id, request()->user()->id);
+        $this->foreign->exec('DELETE FROM sessions');
+        $this->get($path)->assertRedirect('/session/new');
     }
 
     public function test_variants_and_disable_setting_keep_native_paths(): void

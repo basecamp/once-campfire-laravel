@@ -28,22 +28,29 @@ final class AuthenticateCampfire
         }
         $crypto = app(RailsCrypto::class);
         $token = $crypto->verifyCookie('session_token', $request->cookie('session_token'));
-        $session = is_string($token) ? DB::table('sessions')->where('token', $token)->first() : null;
-        $user = $session ? User::active()->find($session->user_id) : null;
-        if (! $user) {
+        // Always read the current rows: another SQLite writer can revoke either record.
+        $row = is_string($token)
+            ? DB::selectOne('SELECT s.id AS campfire_session_id, s.last_active_at AS campfire_last_active_at, u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ? AND u.status = 0 LIMIT 1', [$token])
+            : null;
+        if (! $row) {
             $request->session()->put('return_to', $request->getRequestUri());
 
             return redirect('/session/new');
         }
+        $attributes = (array) $row;
+        $sessionId = $attributes['campfire_session_id'];
+        $lastActive = $attributes['campfire_last_active_at'];
+        unset($attributes['campfire_session_id'], $attributes['campfire_last_active_at']);
+        $user = (new User)->newFromBuilder($attributes);
         if ($user->role === 2) {
             abort(403);
         }
         $request->attributes->set('campfire_user', $user);
-        $request->attributes->set('campfire.session_id', $session->id);
+        $request->attributes->set('campfire.session_id', $sessionId);
         view()->share('currentUser', $user);
         $request->setUserResolver(fn () => $user);
-        if (strtotime($session->last_active_at) < time() - 3600) {
-            DB::table('sessions')->where('id', $session->id)->update(['last_active_at' => now(), 'updated_at' => now(), 'user_agent' => $request->userAgent(), 'ip_address' => $request->ip()]);
+        if (strtotime($lastActive) < time() - 3600) {
+            DB::table('sessions')->where('id', $sessionId)->update(['last_active_at' => now(), 'updated_at' => now(), 'user_agent' => $request->userAgent(), 'ip_address' => $request->ip()]);
         }
 
         return $next($request);
