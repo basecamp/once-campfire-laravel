@@ -50,6 +50,18 @@ final class CampfireTest extends TestCase
         $this->withUnencryptedCookie('session_token', app(RailsCrypto::class)->signCookie('session_token', $token));
     }
 
+    public function test_session_transfer_automatically_submits_without_signing_in_on_get(): void
+    {
+        [$user, $room] = $this->fixture();
+        $id = app(RailsCrypto::class)->signedId($user->id, 'User', 'transfer', now()->addHours(4)->utc()->format('Y-m-d\\TH:i:s.v\\Z'));
+        $path = '/session/transfers/'.$id;
+        $this->get($path)->assertOk()->assertSee('data-controller="auto-submit"', false)->assertSee('</form>', false)->assertSee('auto-submit', false);
+        $this->assertDatabaseCount('sessions', 0);
+        $this->patch($path)->assertRedirect('/');
+        $this->assertDatabaseCount('sessions', 1);
+        $this->assertSame($user->id, DB::table('sessions')->value('user_id'));
+    }
+
     public function test_custom_styles_apply_to_room_profile_and_account_pages_after_updates(): void
     {
         [$user, $room] = $this->fixture();
