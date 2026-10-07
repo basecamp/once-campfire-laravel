@@ -31,7 +31,13 @@ return [
     */
 
     'connections' => [
-        'jobs' => ['driver' => 'sqlite', 'database' => storage_path('jobs.sqlite3'), 'prefix' => '', 'foreign_key_constraints' => true, 'busy_timeout' => 10000, 'journal_mode' => null, 'transaction_mode' => 'IMMEDIATE'],
+        // Both SQLite databases are in WAL mode (campfire:install). synchronous=NORMAL is what
+        // Rails sets (SQLite3Adapter::DEFAULT_PRAGMAS): WAL commits stop waiting for an fsync,
+        // which under FULL held each write lock for milliseconds. The queue worker commits
+        // several times per job, and SQLite's busy handler backs off up to 100 ms per retry, so
+        // a request inserting a job could wait seconds behind it. In WAL mode NORMAL never
+        // corrupts the database; a power loss can undo the last commits.
+        'jobs' => ['driver' => 'sqlite', 'database' => storage_path('jobs.sqlite3'), 'prefix' => '', 'foreign_key_constraints' => true, 'busy_timeout' => 10000, 'journal_mode' => null, 'synchronous' => 'normal', 'transaction_mode' => 'IMMEDIATE'],
 
         'sqlite' => [
             'driver' => 'sqlite',
@@ -41,7 +47,7 @@ return [
             'foreign_key_constraints' => env('DB_FOREIGN_KEYS', true),
             'busy_timeout' => 10000,
             'journal_mode' => null,
-            'synchronous' => null,
+            'synchronous' => 'normal',
             'transaction_mode' => 'IMMEDIATE',
         ],
 
