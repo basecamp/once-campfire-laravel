@@ -8,26 +8,22 @@ docker build -t once-campfire-laravel .
 docker run --rm -p 8080:80 -e SECRET_KEY_BASE="$(openssl rand -hex 64)" -v campfire:/rails/storage once-campfire-laravel
 ```
 
-Existing installs must reuse their `SECRET_KEY_BASE`, preserve `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY` for existing push subscriptions, and mount existing storage at `/rails/storage`. The image runs nginx with gzip, eight PHP-FPM workers, an asynchronous SQLite-backed queue worker and native Action Cable. `HTTP_PORT` changes the listening port.
+Existing installs must reuse their `SECRET_KEY_BASE`, preserve `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY` for existing push subscriptions, and mount existing storage at `/rails/storage`. The image runs FrankenPHP and Laravel Octane, with gzip, an asynchronous SQLite-backed queue worker and native Action Cable. `PHP_WORKERS` defaults to twice the CPU count; `FRANKENPHP_MODE=classic` boots Laravel for each request. `HTTP_PORT` changes the listening port.
 
-Run the PHPUnit suite with `composer test` inside the pinned PHP image; native media tests require libvips. Compatibility and independent verification evidence lives in `plans/contracts.json`. Verification includes 26 independent browser assertions, actual Rails cookie continuity and live WebSocket privacy checks. Remaining checks are listed in the ledger.
+Run the PHPUnit suite with `composer test` inside the Dockerfile's `dev` stage; native media tests require libvips. Compatibility and independent verification evidence lives in `plans/contracts.json`. Verification includes 26 independent browser assertions, actual Rails cookie continuity and live WebSocket privacy checks. Remaining checks are listed in the ledger.
 
 ## Benchmarks
 
-Measured with 16 concurrent clients on an AMD Ryzen AI MAX+ 395,
+Measured with 16 concurrent clients on an AMD Ryzen AI MAX+ 395 with 32 GB RAM,
 with four hardware threads allocated to each app.
 
 | HTTP workload (requests/sec) | Rails | [Django](https://github.com/basecamp/once-campfire-django) | [Laravel](https://github.com/basecamp/once-campfire-laravel) | [Express](https://github.com/basecamp/once-campfire-express) | [Elixir](https://github.com/basecamp/once-campfire-elixir) | [Go](https://github.com/basecamp/once-campfire-go) | [Rust](https://github.com/basecamp/once-campfire-rust) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Room page | 241 | 170 | 164 | 559 | 722 | 3,860 | 36,260 |
-| Messages page | 413 | 196 | 175 | 777 | 1,053 | 5,573 | 40,872 |
-| Sidebar | 552 | 615 | 715 | 4,125 | 1,275 | 19,753 | 34,672 |
-| Search | 435 | 315 | 305 | 1,294 | 1,156 | 7,053 | 33,299 |
-| Post a message | 273 | 154 | 137 | 256 | 801 | 4,767 | 6,896 |
-
-At 100 WebSocket connections and five messages/second, median delivery to every
-connection was 24 ms for Rails, 70 ms for Django and 42 ms for Laravel. Every message
-reached every connection in both runs.
+| Room page | 236 | 62 | 764 | 2,702 | 981 | 32,045 | 35,056 |
+| Messages page | 384 | 70 | 922 | 3,183 | 1,341 | 31,670 | 40,481 |
+| Sidebar | 474 | 230 | 1,399 | 34,595 | 2,546 | 20,125 | 33,924 |
+| Search | 415 | 120 | 1,291 | 6,725 | 1,907 | 30,239 | 34,199 |
+| Post a message | 244 | 113 | 498 | 2,183 | 1,431 | 9,413 | 8,995 |
 
 ## Known differences
 
