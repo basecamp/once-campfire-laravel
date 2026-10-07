@@ -23,10 +23,10 @@ final class ChatController extends Controller
     public function room(Request $r, int $id, ?int $message = null)
     {
         $room = $this->findRoom($r, $id);
-        $query = $room->messages()->presentation();
+        $query = $room->messages();
         if ($message) {
             $at = $room->messages()->findOrFail($message);
-            $messages = $query->clone()->where('created_at', '<', $at->getRawOriginal('created_at'))->orderByDesc('created_at')->limit(40)->get()->reverse()->concat([$at->load(['creator', 'room.users', 'richText', 'boosts.booster', 'attachment.blob'])])->concat($query->clone()->where('created_at', '>', $at->getRawOriginal('created_at'))->orderBy('created_at')->limit(40)->get());
+            $messages = $query->clone()->where('created_at', '<', $at->getRawOriginal('created_at'))->orderByDesc('created_at')->limit(40)->get()->reverse()->concat([$at])->concat($query->clone()->where('created_at', '>', $at->getRawOriginal('created_at'))->orderBy('created_at')->limit(40)->get());
         } else {
             $messages = $query->orderByDesc('created_at')->limit(40)->get()->reverse();
         }
@@ -38,7 +38,7 @@ final class ChatController extends Controller
     public function messages(Request $r, int $room)
     {
         $room = $this->findRoom($r, $room);
-        $q = $room->messages()->presentation();
+        $q = $room->messages();
         if ($r->filled('before')) {
             $at = $room->messages()->findOrFail($r->input('before'));
             $q->where('created_at', '<', $at->getRawOriginal('created_at'));
@@ -78,7 +78,7 @@ final class ChatController extends Controller
     {
         $room = $this->findRoom($r, $room);
         $a = $r->validate(['message' => 'required|array', 'message.body' => 'nullable|string', 'message.client_message_id' => 'nullable|string|max:255', 'message.attachment' => 'nullable']);
-        $m = app(MessageWriter::class)->create($room, $r->user(), $r->hasFile('message.attachment') ? array_merge($a['message'], ['attachment' => $r->file('message.attachment')]) : $a['message'], true)->load(['creator', 'room.users', 'richText', 'boosts.booster', 'attachment.blob']);
+        $m = app(MessageWriter::class)->create($room, $r->user(), $r->hasFile('message.attachment') ? array_merge($a['message'], ['attachment' => $r->file('message.attachment')]) : $a['message'], true)->load(['creator', 'richText', 'attachment.blob.variantRecords', 'boosts.booster', 'room']);
         $html = view('messages.message', ['message' => $m])->render();
         $stream = $this->stream('append', 'messages_room_'.$room->id, $html);
         app(Broadcasts::class)->room($room->id, $stream);
@@ -94,7 +94,7 @@ final class ChatController extends Controller
         $m = $this->findRoom($r, $room)->messages()->findOrFail($id);
         abort_unless($r->user()->canAdminister($m), 403);
         app(MessageWriter::class)->update($m, $r->input('message', []));
-        $m->refresh()->load(['creator', 'room.users', 'richText', 'boosts.booster', 'attachment.blob']);
+        $m->refresh()->load(['creator', 'richText', 'attachment.blob.variantRecords', 'boosts.booster', 'room']);
         app(Broadcasts::class)->room($room, $this->stream('replace', 'presentation_message_'.$m->client_message_id, view('messages.presentation', ['message' => $m])->render()));
 
         return $r->expectsJson() ? response()->json($this->json($m)) : redirect('/rooms/'.$room.'/messages/'.$id);
@@ -126,7 +126,7 @@ final class ChatController extends Controller
         $query = preg_replace('/[^\p{L}\p{N}_]/u', ' ', $r->input('q', ''));
         $messages = collect();
         if (trim($query) !== '') {
-            $messages = Message::presentation()->join('message_search_index as idx', 'messages.id', '=', 'idx.rowid')->whereRaw('idx.body MATCH ?', [$query])->whereIn('room_id', $r->user()->rooms()->select('rooms.id'))->select('messages.*')->orderByDesc('messages.created_at')->limit(100)->get()->reverse();
+            $messages = Message::query()->join('message_search_index as idx', 'messages.id', '=', 'idx.rowid')->whereRaw('idx.body MATCH ?', [$query])->whereIn('room_id', $r->user()->rooms()->select('rooms.id'))->select('messages.*')->orderByDesc('messages.created_at')->limit(100)->get()->reverse();
         }
 
         return view('searches.index', compact('query', 'messages'));
