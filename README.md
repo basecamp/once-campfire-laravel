@@ -38,4 +38,9 @@ with four hardware cores allocated to each app.
 
 - Search selects the newest 100 matching messages by insertion ID, then displays them in ID order. Backdated messages can appear in a different order from the original Rails app.
 
+- Native writers queue on a `.lock` file beside each SQLite database instead of polling SQLite's
+  busy handler. Other SQLite writers still wait through the busy timeout.
+
+- Banned addresses are refused only on unsafe requests, as in Rails, but with 403 rather than Rails' 429.
+
 Laravel transient request sessions and queued jobs use native storage separate from Rails' tables. Native media variants have a separate cache while retaining original blobs and signed URLs. Sidebar updates replace the member's sidebar frame rather than individual rows. The direct-room picker explicitly requests JSON, repairing an inherited browser fetch option. Legacy Marshal serialization is unsupported; JSON Rails cookies, signed identifiers, SGIDs and variations are supported. Do not replace an existing installation until the remaining ledger checks are verified.

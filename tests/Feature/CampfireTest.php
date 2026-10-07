@@ -106,6 +106,33 @@ final class CampfireTest extends TestCase
         $this->assertCount(0, Message::searchFor($user, 'searchsparseonly AND'));
     }
 
+    /** Moves the app onto a WAL database file that a second, foreign connection can write. */
+    private function sharedDatabase(): \PDO
+    {
+        $directory = storage_path('framework/testing/revocation-'.bin2hex(random_bytes(6)));
+        mkdir($directory, 0755, true);
+        $database = $directory.'/application.sqlite3';
+        DB::statement('VACUUM INTO '.DB::connection()->getPdo()->quote($database));
+        config(['database.connections.sqlite.database' => $database]);
+        DB::purge();
+        $this->beforeApplicationDestroyed(fn () => (new Process(['rm', '-rf', $directory]))->mustRun());
+        $foreign = new \PDO('sqlite:'.$database);
+        $foreign->exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=10000');
+
+        return $foreign;
+    }
+
+    private function warmSession(User $user, string $token, Room $room): string
+    {
+        DB::table('sessions')->insert(['token' => $token, 'user_id' => $user->id, 'last_active_at' => now(), 'created_at' => now(), 'updated_at' => now()]);
+        $cookie = app(RailsCrypto::class)->signCookie('session_token', $token);
+        for ($i = 0; $i < 2; $i++) {
+            $this->withUnencryptedCookie('session_token', $cookie)->get('/rooms/'.$room->id)->assertOk();
+        }
+
+        return $cookie;
+    }
+
     public function test_message_writes_index_room_unread_and_notifications_after_commit(): void
     {
         [$u,$room] = $this->fixture();
@@ -510,5 +537,51 @@ PHP;
         $this->assertSame(1, $xpath->query('//*[@id="direct_rooms_control"]//a[@href="/rooms/directs/new" and @data-turbo-frame="direct_rooms_control"]')->length);
         $this->assertSame(1, $xpath->query('//*[@id="direct_rooms_control"]//*[@id="direct_rooms"]//a[@id="list_room_'.$direct->id.'"]')->length);
         $this->assertSame(0, $xpath->query('//*[@id="direct_rooms_control"]//*[@id="shared_rooms"]')->length);
+    }
+
+    public function test_logging_out_rejects_the_warm_session_cookie_on_the_next_request(): void
+    {
+        [$user, $room] = $this->fixture();
+        $this->sharedDatabase();
+        $cookie = $this->warmSession($user, 'logout-session', $room);
+
+        $this->withUnencryptedCookie('session_token', $cookie)->delete('/session')->assertRedirect();
+
+        $this->withUnencryptedCookie('session_token', $cookie)->get('/rooms/'.$room->id)->assertRedirect('/session/new');
+    }
+
+    public function test_banning_a_user_rejects_their_warm_session_on_the_next_request(): void
+    {
+        [$admin, $room] = $this->fixture();
+        $member = User::create(['name' => 'Jason', 'role' => 0, 'status' => 0]);
+        Membership::create(['room_id' => $room->id, 'user_id' => $member->id]);
+        $this->sharedDatabase();
+        $memberCookie = $this->warmSession($member, 'member-session', $room);
+        $adminCookie = $this->warmSession($admin, 'admin-session', $room);
+
+        $this->withUnencryptedCookie('session_token', $adminCookie)->post('/users/'.$member->id.'/ban')->assertRedirect('/users/'.$member->id);
+
+        $this->withUnencryptedCookie('session_token', $memberCookie)->get('/rooms/'.$room->id)->assertRedirect('/session/new');
+    }
+
+    public function test_foreign_sqlite_revocations_reject_warm_sessions_on_the_next_request(): void
+    {
+        [$user, $room] = $this->fixture();
+        $foreign = $this->sharedDatabase();
+        $revocations = [
+            'session deleted' => fn () => $foreign->exec("DELETE FROM sessions WHERE token = 'foreign-session'"),
+            'user banned' => fn () => $foreign->exec('UPDATE users SET status = 2 WHERE id = '.$user->id),
+            'user deactivated' => fn () => $foreign->exec('UPDATE users SET status = 1 WHERE id = '.$user->id),
+        ];
+        foreach ($revocations as $revocation => $revoke) {
+            $foreign->exec("DELETE FROM sessions WHERE token = 'foreign-session'");
+            $foreign->exec('UPDATE users SET status = 0 WHERE id = '.$user->id);
+            $cookie = $this->warmSession($user, 'foreign-session', $room);
+
+            $revoke();
+
+            $response = $this->withUnencryptedCookie('session_token', $cookie)->get('/rooms/'.$room->id);
+            $this->assertTrue($response->isRedirect(url('/session/new')), $revocation.' still authenticated with status '.$response->getStatusCode());
+        }
     }
 }

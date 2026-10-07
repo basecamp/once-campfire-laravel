@@ -103,7 +103,8 @@
     }
   },
   "verification": {
-    "phpunit": "27 tests, 587 assertions; production PHP 8.4.26 image (FrankenPHP 1.13, SQLite 3.53.4) with libvips",
+    "phpunit": "39 tests, 667 assertions; Dockerfile dev stage, PHP 8.4.26 (FrankenPHP 1.13, SQLite 3.53.4) with libvips",
+    "authentication_revocation": "Every authenticated request reads the session/user join from SQLite; nothing caches it. PHPUnit warms sessions, then logs out, bans through the admin action, and deletes the session, bans or deactivates the user through a second SQLite connection: the next request redirects to sign-in in every case. With APCu enabled in the CLI, the earlier 300-second APCu row cache (e9f3353) fails all three tests (200 after logout, ban and foreign deletion). Production image, worker mode with 4 PHP workers, 8 concurrent clients: after the sqlite3 CLI deletes the session, bans or deactivates the user, 80/80 requests per case redirect to /session/new (80/80 returned 200 while warm).",
     "independent_http": "18 checks passed",
     "independent_cable_security": "3 checks passed",
     "claude": "Requirements/architecture reviewed; source export blocked by automatic approval review.",
