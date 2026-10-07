@@ -50,6 +50,17 @@ final class CampfireTest extends TestCase
         $this->withUnencryptedCookie('session_token', app(RailsCrypto::class)->signCookie('session_token', $token));
     }
 
+    public function test_direct_room_heading_names_the_other_participant_for_screen_readers(): void
+    {
+        [$user] = $this->fixture();
+        $other = User::create(['name' => 'Other participant', 'role' => 0, 'status' => 0]);
+        $room = Room::create(['type' => 'Rooms::Direct', 'creator_id' => $user->id]);
+        Membership::create(['room_id' => $room->id, 'user_id' => $user->id]);
+        Membership::create(['room_id' => $room->id, 'user_id' => $other->id]);
+        $this->auth($user);
+        $this->get('/rooms/'.$room->id)->assertOk()->assertSee('<span class="for-screen-reader">Ping with </span>Other participant', false);
+    }
+
     public function test_session_transfer_automatically_submits_without_signing_in_on_get(): void
     {
         [$user, $room] = $this->fixture();

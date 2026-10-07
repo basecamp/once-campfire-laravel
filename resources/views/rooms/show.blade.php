@@ -2,7 +2,7 @@
 @section('head')<meta name="current-room-id" content="{{ $room->id }}"><meta name="turbo-cache-control" content="no-preview">@endsection
 @section('nav')
 <a class="btn" href="/users/me/profile"><img class="avatar" src="{{ $currentUser->avatarUrl() }}" width="32" height="32" alt="My settings"></a>
-<h1 class="overflow-ellipsis">{{ $room->displayName($currentUser) }}</h1>
+<h1 class="overflow-ellipsis">@if($room->type === 'Rooms::Direct')<span class="for-screen-reader">Ping with </span>@endif{{ $room->displayName($currentUser) }}</h1>
 <div class="flex-item-justify-end"><a class="btn" href="/rooms/{{ $room->id }}/settings" ><img src="{{ app(\App\Support\Assets::class)->path('settings.svg') }}" width="20" height="20" aria-hidden="true"><span class="for-screen-reader">Room settings</span></a><turbo-frame id="involvement_{{ $room->id }}" src="/rooms/{{ $room->id }}/involvement"></turbo-frame></div>
 @endsection
 @section('sidebar')<turbo-frame id="user_sidebar" src="/users/me/sidebar" target="_top" data-turbo-permanent="true" data-controller="rooms-list read-rooms turbo-frame" data-rooms-list-unread-class="unread" data-action="presence:present@window->rooms-list#read read-rooms:read->rooms-list#read turbo:frame-load->rooms-list#loaded refresh-room:visible@window->turbo-frame#reload"></turbo-frame>@endsection
