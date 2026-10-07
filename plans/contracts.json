@@ -1,6 +1,6 @@
 {
   "reference_revision": "659f95748a115a360a37db9bf80a5361a560e14f",
-  "runtime": "Laravel 13 / PHP 8.4",
+  "runtime": "Laravel 13 / PHP 8.4 on FrankenPHP 1.13 (Laravel Octane worker mode; classic mode available)",
   "ui_bar": "interactive Rails frontend; byte parity not yet established",
   "contracts": {
     "schema": {
@@ -76,11 +76,11 @@
     },
     "jobs": {
       "status": "verified",
-      "evidence": "Native durable auxiliary SQLite worker executes real delivery; PHPUnit checks afterCommit and rollback."
+      "evidence": "Native durable auxiliary SQLite worker executes real delivery; PHPUnit checks afterCommit and rollback. FrankenPHP image: queue:work runs beside the web server and Action Cable, restarted if it exits."
     },
     "fresh_setup": {
       "status": "verified",
-      "evidence": "Isolated blank native installation, first administrator and real login verified in independent browser (4 assertions)."
+      "evidence": "Isolated blank native installation, first administrator and real login verified in independent browser (4 assertions). FrankenPHP image: README docker run on an empty volume serves /first_run, provisions the administrator and signs in."
     },
     "backup": {
       "status": "partially_verified",
@@ -95,18 +95,23 @@
     },
     "benchmarks": {
       "status": "verified",
-      "evidence": "Matched production HTTP runs against Ruby and Django: identical ordered windows, successful persisted body-bearing writes, FTS and SQLite integrity. Real resized JPEGs verified. Two paced runs admit all 100 sockets and fully deliver all 30 messages; no capacity limit inferred. Raw outputs remain ignored."
+      "evidence": "Matched production HTTP runs against Ruby and Django: identical ordered windows, successful persisted body-bearing writes, FTS and SQLite integrity. Real resized JPEGs verified. Two paced runs admit all 100 sockets and fully deliver all 30 messages; no capacity limit inferred. Raw outputs remain ignored. These figures were measured on the nginx + PHP-FPM runtime and have not been re-measured on FrankenPHP."
+    },
+    "worker_mode": {
+      "status": "verified",
+      "evidence": "PHPUnit boots one Octane application and drives anonymous, signed-in and second-user requests through it: current-user meta, Rails CSRF secret, rejected cross-session token, message author, personal sidebar stream and shared view data never cross requests; per-request services add no listeners. Production image, worker mode, 16 concurrent clients mixing four users and anonymous visitors: every room page carried its own user and CSRF secret, every sidebar its own signed stream, no login page a user (13.7k requests in 10 seconds, 0 mismatches; also in classic mode and as a non-root user)."
     }
   },
   "verification": {
-    "phpunit": "25 tests, 509 assertions; production PHP 8.4.26 image with libvips",
+    "phpunit": "27 tests, 587 assertions; production PHP 8.4.26 image (FrankenPHP 1.13, SQLite 3.53.4) with libvips",
     "independent_http": "18 checks passed",
     "independent_cable_security": "3 checks passed",
     "claude": "Requirements/architecture reviewed; source export blocked by automatic approval review.",
     "browser": "26 assertions passed without JavaScript errors: 10 core, 12 administration, 4 isolated fresh setup",
-    "concurrent_native_writes": "Four independent PHP applications each create eight messages while holding membership reads 20ms: 32 messages and 32 FTS rows persisted. Independent production FPM 16-client write tests completed twice without failed requests.",
+    "concurrent_native_writes": "Four independent PHP applications each create eight messages while holding membership reads 20ms: 32 messages and 32 FTS rows persisted. Independent production FPM 16-client write tests completed twice without failed requests. FrankenPHP image: 16 concurrent clients posting for 30 seconds in worker mode (16,046 acknowledged) and classic mode (5,342 acknowledged): every acknowledged post persisted with its body and FTS row; integrity_check ok.",
     "pending_socket_admission": "Real TCP regression covers pending admission, deadline and authenticated revocation. Independent production retest admits all 100 connections and delivers all 30 paced messages to every socket in both fresh runs.",
     "benchmark_provenance": "HTTP runtime 112a66f; socket runtime 87b332b. Diff contains only socket admission code, its tests and ledger; all measured HTTP paths unchanged. Production image runtime hashes independently verified.",
-    "sqlite_synchronous": "Both connections now use synchronous=NORMAL in WAL mode, as Rails' SQLite3Adapter::DEFAULT_PRAGMAS do. Before, synchronous=FULL held every write lock across an fsync (4-14 ms per commit on the test volume). SQLite's backing-off busy handler then made a request inserting a job wait up to 1-3 s behind the queue worker's commits; profiled, the jobs insert took 250-1,068 ms, and with the queue worker stopped the waits vanished. Single client posting 300 messages: upstream PHP-FPM image 14 -> 58 posts/s (p99 802 -> 69 ms)."
+    "frankenphp_smoke": "Parity seed on the production image, worker and classic modes as root, worker mode as --user 1000:1000: /up, login form CSRF, POST /session 302 with session_token, room page with stream sources, messages page, sidebar, search, image avatar (X-Accel-Redirect), turbo-stream post, bad-token post rejected, multipart JPEG upload and thumbnail, /cable welcome, subscription and broadcast. Worker mode admits 1000 sockets and delivers every paced message to all of them.",
+    "sqlite_synchronous": "Both connections now use synchronous=NORMAL in WAL mode, as Rails' SQLite3Adapter::DEFAULT_PRAGMAS do. Before, synchronous=FULL held every write lock across an fsync (4-14 ms per commit on the test volume). SQLite's backing-off busy handler then made a request inserting a job wait up to 1-3 s behind the queue worker's commits; profiled, the jobs insert took 250-1,068 ms, and with the queue worker stopped the waits vanished. Single client posting 300 messages: upstream PHP-FPM image 14 -> 58 posts/s (p99 802 -> 69 ms); FrankenPHP worker mode 14 -> 199 posts/s (p99 1,369 -> 38 ms)."
   }
 }

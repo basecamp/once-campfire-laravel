@@ -8,9 +8,19 @@ docker build -t once-campfire-laravel .
 docker run --rm -p 8080:80 -e SECRET_KEY_BASE="$(openssl rand -hex 64)" -v campfire:/rails/storage once-campfire-laravel
 ```
 
-Existing installs must reuse their `SECRET_KEY_BASE`, preserve `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY` for existing push subscriptions, and mount existing storage at `/rails/storage`. The image runs nginx with gzip, eight PHP-FPM workers, an asynchronous SQLite-backed queue worker and native Action Cable. `HTTP_PORT` changes the listening port.
+Existing installs must reuse their `SECRET_KEY_BASE`, preserve `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY` for existing push subscriptions, and mount existing storage at `/rails/storage`. The image runs [FrankenPHP](https://frankenphp.dev) with gzip and the app in [Laravel Octane](https://laravel.com/docs/octane) worker mode (two worker threads per CPU, each booting the application once), an asynchronous SQLite-backed queue worker and native Action Cable. `HTTP_PORT` changes the listening port; `CABLE_PORT` (default `TARGET_PORT`, else `HTTP_PORT + 1000`) is the loopback port of the Action Cable server. `FRANKENPHP_MODE=classic` boots the application for every request instead, as PHP-FPM did, on as many PHP threads; `PHP_WORKERS` and `MAX_REQUESTS` (500) tune worker mode. The container runs as root, or as any `--user` that can write `/rails/storage`.
 
-Run the PHPUnit suite with `composer test` inside the pinned PHP image; native media tests require libvips. Compatibility and independent verification evidence lives in `plans/contracts.json`. Verification includes 26 independent browser assertions, actual Rails cookie continuity and live WebSocket privacy checks. Remaining checks are listed in the ledger.
+SQLite is built from source (3.53.4): Debian's 3.46 has the [WAL-reset bug](https://sqlite.org/wal.html#walresetbug), which can corrupt a WAL database when connections write and checkpoint concurrently, as worker threads, the queue worker and Action Cable do.
+
+Run the PHPUnit suite with `composer test` inside the pinned PHP image; native media tests require libvips:
+
+```sh
+docker build --target dev -t once-campfire-laravel:dev .
+docker run --rm -v "$PWD/tests:/rails/tests:ro" -v "$PWD/compat:/rails/compat:ro" -v /dev/null:/rails/.env:ro \
+  -e APP_KEY="base64:$(openssl rand -base64 32)" once-campfire-laravel:dev composer test
+```
+
+`tests/Feature/OctaneWorkerIsolationTest.php` boots the application once, as an Octane worker does, and drives several users through it to prove that no user, CSRF token or shared view data survives from one request to the next. Compatibility and independent verification evidence lives in `plans/contracts.json`. Verification includes 26 independent browser assertions, actual Rails cookie continuity and live WebSocket privacy checks. Remaining checks are listed in the ledger.
 
 ## Benchmarks
 
@@ -31,4 +41,4 @@ reached every connection in both runs.
 
 ## Known differences
 
-Laravel transient request sessions and queued jobs use native storage separate from Rails' tables. Native media variants have a separate cache while retaining original blobs and signed URLs. Sidebar updates replace the member's sidebar frame rather than individual rows. The direct-room picker explicitly requests JSON, repairing an inherited browser fetch option. Legacy Marshal serialization is unsupported; JSON Rails cookies, signed identifiers, SGIDs and variations are supported. Both SQLite databases use `synchronous=NORMAL` in WAL mode, as Rails does: a power loss (not an application crash) can undo the last commits, and the database is never corrupted. Do not replace an existing installation until the remaining ledger checks are verified.
+Laravel transient request sessions and queued jobs use native storage separate from Rails' tables. Native media variants have a separate cache while retaining original blobs and signed URLs. Sidebar updates replace the member's sidebar frame rather than individual rows. The direct-room picker explicitly requests JSON, repairing an inherited browser fetch option. Legacy Marshal serialization is unsupported; JSON Rails cookies, signed identifiers, SGIDs and variations are supported. In worker mode each request is served by an application booted before it; `config/octane.php` resets per-request state (shared view data, open transactions, uploaded temporary files) and Octane restarts a worker after `MAX_REQUESTS` requests. Caddy passes the client's `Host` header through (nginx sent `host:server_port`), gives files in `public/` Rails' cache headers (`/assets` a year and immutable, others 30 days), gzips at level 6 from 512 bytes, and sends stored blobs and variants itself via `X-Accel-Redirect`. Both SQLite databases use `synchronous=NORMAL` in WAL mode, as Rails does: a power loss (not an application crash) can undo the last commits, and the database is never corrupted. Do not replace an existing installation until the remaining ledger checks are verified.
