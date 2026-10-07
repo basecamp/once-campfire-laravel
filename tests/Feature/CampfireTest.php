@@ -419,4 +419,15 @@ PHP;
         $this->assertSame(TcpConnection::STATUS_CLOSED, $connection->getStatus());
         fclose($sockets[1]);
     }
+
+    public function test_sidebar_is_a_complete_page_for_the_current_viewer(): void
+    {
+        [$user] = $this->fixture();
+        $this->auth($user);
+        $response = $this->get('/users/me/sidebar')->assertOk();
+        $response->assertSee('<!DOCTYPE html>', false);
+        $response->assertSee('name="current-user-id" content="'.$user->id.'"', false);
+        $response->assertSee('id="user_sidebar"', false);
+        $response->assertSee('</html>', false);
+    }
 }
