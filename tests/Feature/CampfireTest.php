@@ -50,6 +50,20 @@ final class CampfireTest extends TestCase
         $this->withUnencryptedCookie('session_token', app(RailsCrypto::class)->signCookie('session_token', $token));
     }
 
+    public function test_custom_styles_apply_to_room_profile_and_account_pages_after_updates(): void
+    {
+        [$user, $room] = $this->fixture();
+        $this->auth($user);
+        $styles = 'body { --custom-style-test: first; }';
+        $this->patch('/account/custom_styles', ['account' => ['custom_styles' => $styles]])->assertRedirect('/account/edit');
+        foreach (['/rooms/'.$room->id, '/users/me/profile', '/account/edit'] as $path) {
+            $this->get($path)->assertOk()->assertSee('<style>'.$styles.'</style>', false);
+        }
+        $changed = 'body { --custom-style-test: second; }';
+        $this->patch('/account/custom_styles', ['account' => ['custom_styles' => $changed]])->assertRedirect('/account/edit');
+        $this->get('/rooms/'.$room->id)->assertOk()->assertSee('<style>'.$changed.'</style>', false)->assertDontSee($styles, false);
+    }
+
     public function test_search_reaches_sparse_memberships_and_quotes_literal_terms(): void
     {
         [$user, $room] = $this->fixture();
