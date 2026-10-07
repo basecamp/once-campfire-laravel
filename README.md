@@ -27,6 +27,9 @@ with four hardware threads allocated to each app.
 
 ## Known differences
 
+- Sidebar connection refresh waits for the current Turbo frame to finish loading,
+  preventing an aborted response on startup or reconnect. Obsolete connections and removed frames do not reload.
+
 - Search selects the newest 100 matching messages by insertion ID, then displays them in ID order. Backdated messages can appear in a different order from the original Rails app.
 
 Laravel transient request sessions and queued jobs use native storage separate from Rails' tables. Native media variants have a separate cache while retaining original blobs and signed URLs. Sidebar updates replace the member's sidebar frame rather than individual rows. The direct-room picker explicitly requests JSON, repairing an inherited browser fetch option. Legacy Marshal serialization is unsupported; JSON Rails cookies, signed identifiers, SGIDs and variations are supported. Do not replace an existing installation until the remaining ledger checks are verified.
