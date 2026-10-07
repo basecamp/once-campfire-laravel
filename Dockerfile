@@ -1,17 +1,33 @@
-FROM composer:2.8@sha256:5248900ab8b5f7f880c2d62180e40960cd87f60149ec9a1abfd62ac72a02577c AS composer
+# syntax = docker/dockerfile:1
+#
+# FrankenPHP (Caddy + PHP 8.4 ZTS) serving the app through Laravel Octane's worker, plus the
+# Action Cable server (bin/cable) and the queue worker; see bin/start and deploy/Caddyfile.
+#
+#   docker build -t once-campfire-laravel .
+#   docker build --target dev -t once-campfire-laravel:dev .     # dev dependencies, for composer test
+#
+# Stages: sqlite (SQLite from source) -> base (FrankenPHP, extensions, libvips, ffmpeg)
+# -> deps (production vendor/) -> prod (default); dev = deps + dev dependencies.
 
-# SQLite itself, built from the official amalgamation. Debian bookworm's libsqlite3-0 (3.40.1,
-# which pdo_sqlite links against) has the WAL-reset bug (https://sqlite.org/wal.html#walresetbug,
+# FrankenPHP 1.13 / PHP 8.4 ZTS / Caddy 2.11 on Debian trixie (multi-arch index: linux/amd64, linux/arm64, ...).
+ARG FRANKENPHP_IMAGE=docker.io/dunglas/frankenphp:1-php8.4-trixie@sha256:81f7030a2b7230f26dbdf281bee328e03221a33b3545a5d432d7f67e3346d704
+ARG COMPOSER_IMAGE=docker.io/library/composer:2.8@sha256:5248900ab8b5f7f880c2d62180e40960cd87f60149ec9a1abfd62ac72a02577c
+
+FROM ${COMPOSER_IMAGE} AS composer
+
+
+# SQLite itself, built from the official amalgamation. Debian trixie's libsqlite3-0 (3.46.1, which
+# pdo_sqlite links against) has the WAL-reset bug (https://sqlite.org/wal.html#walresetbug,
 # 3.7.0 through 3.51.2): two connections writing or checkpointing at the same instant can lose
 # part of a transaction during a checkpoint, and SQLite then reports "database disk image is
-# malformed". PHP-FPM children, bin/cable and the queue worker each hold a connection to the same
-# WAL database. The library replaces the system one for every process in the image (pdo_sqlite,
-# sqlite3): it goes first on the loader path, with the same soname.
-FROM php:8.4-fpm-bookworm@sha256:43e1ac38217031dbbecae60e84ccf8593722031559178d199bf56adb0145d5d0 AS sqlite
+# malformed". FrankenPHP's worker threads (one connection each, in one process), bin/cable and
+# the queue worker are exactly that pattern. Rails' sqlite3 gem 2.9.6 bundles 3.53.2.
+# The library replaces the system one for every process in the image (pdo_sqlite, sqlite3):
+# it goes first on the loader path, with the same soname.
+FROM ${FRANKENPHP_IMAGE} AS sqlite
 ARG SQLITE_VERSION=3530400
 ARG SQLITE_YEAR=2026
 ARG SQLITE_SHA3_256=454e45f61c6bd75b7420e7190732dea03ce6639c63ada47bbc592f67fc340338
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential curl ca-certificates && rm -rf /var/lib/apt/lists/*
 # Debian's compile options (`PRAGMA compile_options` of libsqlite3-0), so nothing else changes.
 RUN set -eux; \
     cd /tmp; \
@@ -31,17 +47,75 @@ RUN set -eux; \
     make install DESTDIR=/sqlite; \
     rm -rf /sqlite/usr/local/share /sqlite/usr/local/lib/*/pkgconfig
 
-FROM php:8.4-fpm-bookworm@sha256:43e1ac38217031dbbecae60e84ccf8593722031559178d199bf56adb0145d5d0
-RUN apt-get update && apt-get install -y --no-install-recommends nginx libsqlite3-dev libonig-dev libxml2-dev libcurl4-openssl-dev libzip-dev libvips-tools ffmpeg unzip && docker-php-ext-install pdo_sqlite mbstring dom pcntl sockets opcache && rm -rf /var/lib/apt/lists/*
-RUN docker-php-ext-install bcmath
-# SQLite from the sqlite stage, first on the loader path; the build fails unless PHP loads it.
+
+FROM ${FRANKENPHP_IMAGE} AS base
+
+# libvips-tools (vips CLI): image variants; ffmpeg/ffprobe: video previews and analysis.
+RUN apt-get update -qq && \
+    apt-get install --no-install-recommends -y libvips-tools ffmpeg && \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+# SQLite (see the sqlite stage) and its CLI. /usr/local/lib/<multiarch> comes first in
+# /etc/ld.so.conf.d/<multiarch>.conf, ahead of Debian's copy; the check fails the build unless
+# PHP really loads it.
 COPY --from=sqlite /sqlite/usr/local/ /usr/local/
 RUN ldconfig && \
-    php -r 'exit(version_compare((new PDO("sqlite::memory:"))->query("select sqlite_version()")->fetchColumn(), "3.51.3", ">=") && version_compare(SQLite3::version()["versionString"], "3.51.3", ">=") ? 0 : 1);'
-COPY --from=composer /usr/bin/composer /usr/local/bin/composer
+    php -r 'exit(version_compare((new PDO("sqlite::memory:"))->query("select sqlite_version()")->fetchColumn(), "3.51.3", ">=") && version_compare(SQLite3::version()["versionString"], "3.51.3", ">=") ? 0 : 1);' && \
+    sqlite3 --version
+
+# bcmath (Web Push), pcntl and sockets (Workerman, queue:work), as in the PHP-FPM image, plus
+# gmp, which minishlink/web-push recommends for its elliptic-curve math, and event, which
+# Workerman uses instead of select() (limited to FD_SETSIZE, 1024 descriptors: about a thousand
+# WebSocket connections). pdo_sqlite, mbstring, dom, opcache and posix ship with the base image.
+RUN install-php-extensions bcmath event gmp pcntl sockets
+
+# The base image gives frankenphp cap_net_bind_service as a file capability; under
+# --cap-drop=ALL that makes exec fail. Without it, root still binds :80, and other users bind
+# high ports (Docker's own network namespaces also allow low ports to everyone).
+RUN cp /usr/local/bin/frankenphp /tmp/frankenphp && mv /tmp/frankenphp /usr/local/bin/frankenphp && \
+    ! getcap /usr/local/bin/frankenphp | grep -q cap_
+
+COPY deploy/php.ini $PHP_INI_DIR/conf.d/zz-campfire.ini
+
 WORKDIR /rails
+
+ENV XDG_CONFIG_HOME=/tmp/caddy/config \
+    XDG_DATA_HOME=/tmp/caddy/data \
+    COMPOSER_HOME=/tmp/composer \
+    COMPOSER_CACHE_DIR=/tmp/composer-cache \
+    COMPOSER_ALLOW_SUPERUSER=1
+
+COPY --from=composer /usr/bin/composer /usr/local/bin/composer
+
+
+# Production dependencies, cached on composer.lock alone.
+FROM base AS deps
+RUN apt-get update -qq && \
+    apt-get install --no-install-recommends -y unzip git && \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+COPY composer.json composer.lock ./
+RUN --mount=type=cache,id=campfire-laravel-composer,target=/tmp/composer-cache \
+    composer install --no-dev --no-scripts --no-autoloader --no-interaction --no-progress --prefer-dist
+
+
+# composer test: dev dependencies. .dockerignore keeps tests/ and compat/ out of the build
+# context, so they are mounted at run time (README).
+FROM deps AS dev
+RUN --mount=type=cache,id=campfire-laravel-composer,target=/tmp/composer-cache \
+    composer install --no-scripts --no-autoloader --no-interaction --no-progress --prefer-dist
 COPY . .
-RUN composer install --no-dev --classmap-authoritative --no-interaction && mkdir -p storage/framework/{cache,sessions,views} storage/logs storage/db storage/files && chown -R www-data:www-data storage bootstrap/cache
-COPY deploy/php.ini /usr/local/etc/php/conf.d/campfire.ini
-COPY deploy/fpm.conf /usr/local/etc/php-fpm.d/zz-campfire.conf
+RUN composer dump-autoload --no-interaction && \
+    mkdir -p storage/framework/cache storage/framework/sessions storage/framework/views storage/logs && \
+    chmod -R a+rwX storage bootstrap/cache
+
+
+FROM deps AS prod
+COPY . .
+RUN composer dump-autoload --no-dev --classmap-authoritative --no-interaction && \
+    mkdir -p storage/framework/cache storage/framework/sessions storage/framework/views storage/logs storage/db storage/files && \
+    chown -R www-data:www-data storage bootstrap/cache && \
+    chmod -R a+rwX storage bootstrap/cache
+EXPOSE 80
+# The base image's healthcheck polls Caddy's admin API, which is off.
+HEALTHCHECK NONE
 ENTRYPOINT ["/rails/bin/start"]

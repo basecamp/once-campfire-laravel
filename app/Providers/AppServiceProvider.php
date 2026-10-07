@@ -9,6 +9,7 @@ use App\Support\RichTextRenderer;
 use App\Support\SQLiteGrammar;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\ServiceProvider;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -30,6 +31,10 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         BlobStorage::listen();
+        // deploy/Caddyfile sets X-Sendfile-Type/X-Accel-Mapping on every request (overriding any
+        // the client sent) and serves files under storage/files itself: response()->file() only
+        // names them in X-Accel-Redirect. Without those request headers nothing changes.
+        BinaryFileResponse::trustXSendfileTypeHeader();
         $connection = DB::connection();
         $connection->setQueryGrammar(new SQLiteGrammar($connection));
         if (file_exists(storage_path('vapid.json'))) {

@@ -1,0 +1,14 @@
+# FRANKENPHP_MODE=worker (the default): Laravel Octane. PHP_WORKERS threads each boot the
+# application once (Octane's ApplicationFactory) and serve every request from a clone of it,
+# reset by the listeners in config/octane.php; a worker restarts after MAX_REQUESTS requests.
+# Everything that is not a file goes to the worker script, as in Octane's own Caddyfile stub.
+php_server {
+	root /rails/public
+	file_server off
+	index frankenphp-worker.php
+	try_files {path} frankenphp-worker.php
+	worker {
+		file /rails/public/frankenphp-worker.php
+		num {$PHP_WORKERS:2}
+	}
+}

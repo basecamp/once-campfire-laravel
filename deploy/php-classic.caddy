@@ -1,0 +1,9 @@
+# FRANKENPHP_MODE=classic: no worker, no Octane; every request runs public/index.php from
+# scratch (autoloader, application boot, cached config and views; OPcache still applies), the way
+# PHP-FPM serves PHP. bin/start gives it as many PHP threads as worker mode has workers.
+# Octane's worker script only runs as a worker.
+respond /frankenphp-worker.php 404
+php_server {
+	root /rails/public
+	file_server off
+}
