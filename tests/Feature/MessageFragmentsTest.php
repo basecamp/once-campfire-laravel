@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\Boost;
 use App\Models\Membership;
 use App\Models\Message;
 use App\Models\Room;
@@ -51,5 +52,21 @@ final class MessageFragmentsTest extends TestCase
         $after = $fragments->render([$message->fresh()]);
         $this->assertStringContainsString('After', $after);
         $this->assertStringNotContainsString('title="Before"', $after);
+    }
+
+    public function test_room_and_booster_changes_invalidate_a_warm_message_fragment(): void
+    {
+        $message = $this->message();
+        $booster = User::create(['name' => 'Booster before', 'role' => 0, 'status' => 0]);
+        Boost::create(['message_id' => $message->id, 'booster_id' => $booster->id, 'content' => '👍']);
+        $fragments = app(MessageFragments::class);
+        $before = $fragments->render([$message->fresh()]);
+        $this->assertStringContainsString('Booster before boosted', $before);
+        DB::table('users')->where('id', $booster->id)->update(['name' => 'Booster after', 'updated_at' => '2030-01-01 00:00:00']);
+        DB::table('rooms')->where('id', $message->room_id)->update(['name' => 'Renamed room', 'updated_at' => '2030-01-01 00:00:00']);
+        $after = $fragments->render([$message->fresh()]);
+        $this->assertStringContainsString('Booster after boosted', $after);
+        $this->assertStringContainsString('Renamed room', $after);
+        $this->assertStringNotContainsString('Booster before boosted', $after);
     }
 }

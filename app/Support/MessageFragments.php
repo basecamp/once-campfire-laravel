@@ -16,7 +16,7 @@ final class MessageFragments
     public function render(iterable $messages): string
     {
         $messages = new EloquentCollection(Collection::make($messages)->values()->all());
-        $messages->loadMissing('creator');
+        $messages->loadMissing(['creator', 'room', 'boosts.booster']);
         $keys = $messages->map($this->messageKey(...))->all();
         $cached = Cache::many($keys);
         $missing = $messages->filter(fn (Message $message, int $i) => ! is_array($cached[$keys[$i]]));
@@ -47,8 +47,12 @@ final class MessageFragments
 
     public function messageKey(Message $message): string
     {
-        return implode(':', ['message', self::VERSION, url('/'), $message->id,
-            $message->getRawOriginal('updated_at'), $message->creator?->getRawOriginal('updated_at')]);
+        return 'message:'.hash('sha256', json_encode([
+            self::VERSION, url('/'), $message->id,
+            $message->getRawOriginal('updated_at'), $message->creator?->getRawOriginal('updated_at'),
+            $message->room?->displayName(),
+            $message->boosts->map($this->boostKey(...))->all(),
+        ], JSON_THROW_ON_ERROR));
     }
 
     public function boostKey(Boost $boost): string
