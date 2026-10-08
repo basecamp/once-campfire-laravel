@@ -10,6 +10,11 @@ use Illuminate\Foundation\Bootstrap\HandleExceptions;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Facade;
 use Laravel\Octane\ApplicationFactory;
+use Laravel\Octane\Events\RequestReceived;
+use Laravel\Octane\Events\TaskReceived;
+use Laravel\Octane\Events\TickReceived;
+use Laravel\Octane\Listeners;
+use Laravel\Octane\Octane;
 use Laravel\Octane\Testing\Fakes\FakeClient;
 use Laravel\Octane\Testing\Fakes\FakeWorker;
 use PHPUnit\Framework\TestCase;
@@ -286,6 +291,28 @@ final class OctaneWorkerIsolationTest extends TestCase
         $this->assertStringContainsString('foreign.txt</a>', (string) $after->getContent());
         $this->assertStringNotContainsString('Bob Brown</span>', (string) $after->getContent());
         $this->assertStringNotContainsString('original.txt</a>', (string) $after->getContent());
+    }
+
+    public function test_every_default_octane_reset_is_kept_except_for_unused_services(): void
+    {
+        $unused = [
+            Listeners\GiveNewApplicationInstanceToBroadcastManager::class,
+            Listeners\GiveNewApplicationInstanceToMailManager::class,
+            Listeners\GiveNewApplicationInstanceToNotificationChannelManager::class,
+            Listeners\GiveNewRequestInstanceToPaginator::class,
+            Listeners\FlushVite::class,
+            Listeners\PrepareInertiaForNextOperation::class,
+            Listeners\PrepareLivewireForNextOperation::class,
+            Listeners\PrepareScoutForNextOperation::class,
+            Listeners\PrepareSocialiteForNextOperation::class,
+        ];
+        $operation = array_diff(Octane::prepareApplicationForNextOperation(), $unused);
+        $request = array_diff(Octane::prepareApplicationForNextRequest(), $unused);
+        $listeners = $this->worker->application()->make('config')->get('octane.listeners');
+
+        $this->assertSame([], array_values(array_diff([...$operation, ...$request], $listeners[RequestReceived::class])));
+        $this->assertSame([], array_values(array_diff($operation, $listeners[TaskReceived::class])));
+        $this->assertSame([], array_values(array_diff($operation, $listeners[TickReceived::class])));
     }
 
     private function request(string $method, string $uri, array $parameters = [], array $cookies = [], array $headers = []): Response

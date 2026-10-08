@@ -29,7 +29,7 @@ final class MessageWriter
         }
         try {
             return DB::transaction(function () use ($room, $user, $attributes, $webhooks, $blob, $renderer, $body, $plain, $hasEmbeds) {
-                abort_unless($room->memberships()->where('user_id', $user->id)->exists(), 403);
+                abort_unless(DB::table('memberships')->where('room_id', $room->id)->where('user_id', $user->id)->exists(), 403);
                 $plain ??= $renderer->plain($body);
                 // Plain inserts with one timestamp: the rows Eloquent's create() and Message::$touches
                 // (Rails' belongs_to :room, touch: true) write, without model events or a room reload.
@@ -53,7 +53,7 @@ final class MessageWriter
                 DB::insert('INSERT INTO message_search_index(rowid,body) VALUES(?,?)', [$message->id, $plain]);
                 // Shared rooms keep their first unread timestamp; directs refresh sidebar recency.
                 // Matches the unread policy adopted in Rails PR #336.
-                $unread = $room->memberships()->where('user_id', '!=', $user->id)->where('involvement', '!=', 'invisible')->where(fn ($q) => $q->whereNull('connected_at')->orWhere('connected_at', '<', now()->subMinute()));
+                $unread = DB::table('memberships')->where('room_id', $room->id)->where('user_id', '!=', $user->id)->where('involvement', '!=', 'invisible')->where(fn ($q) => $q->whereNull('connected_at')->orWhere('connected_at', '<', now()->subMinute()));
                 if (! $room->isDirect()) {
                     $unread->whereNull('unread_at');
                 }
