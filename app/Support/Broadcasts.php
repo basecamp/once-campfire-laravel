@@ -6,7 +6,23 @@ final class Broadcasts
 {
     public function publish(string $stream, mixed $message): void
     {
-        $line = json_encode(['stream' => $stream, 'message' => $message], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n";
+        $this->publishMany([[$stream, $message]]);
+    }
+
+    /**
+     * Appends several broadcasts under one lock, in the given order.
+     *
+     * @param  list<array{0: string, 1: mixed}>  $events
+     */
+    public function publishMany(array $events): void
+    {
+        $line = '';
+        foreach ($events as [$stream, $message]) {
+            $line .= json_encode(['stream' => $stream, 'message' => $message], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n";
+        }
+        if ($line === '') {
+            return;
+        }
         $file = fopen(config('campfire.events'), 'ab');
         if (! $file) {
             throw new \RuntimeException('Cannot open broadcast outbox');

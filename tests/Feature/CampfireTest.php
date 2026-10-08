@@ -15,6 +15,7 @@ use App\Support\Presence;
 use App\Support\RailsCrypto;
 use App\Support\RichTextRenderer;
 use App\Support\SocketSessions;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -266,6 +267,65 @@ final class CampfireTest extends TestCase
         }
         $this->assertDatabaseCount('messages', 0);
         Queue::assertNothingPushed();
+    }
+
+    public function test_failed_unread_update_rolls_back_message_rich_text_and_search_index(): void
+    {
+        [$user, $room] = $this->fixture();
+        $other = User::create(['name' => 'Other', 'role' => 0, 'status' => 0]);
+        Membership::create(['room_id' => $room->id, 'user_id' => $other->id, 'involvement' => 'everything']);
+        DB::unprepared("CREATE TRIGGER fail_unread BEFORE UPDATE OF unread_at ON memberships BEGIN SELECT RAISE(ABORT, 'unread update failed'); END");
+
+        try {
+            app(MessageWriter::class)->create($room, $user, ['body' => '<p>Atomic message</p>']);
+            $this->fail('The unread update must fail.');
+        } catch (QueryException $error) {
+            $this->assertStringContainsString('unread update failed', $error->getMessage());
+        }
+
+        $this->assertDatabaseCount('messages', 0);
+        $this->assertDatabaseCount('action_text_rich_texts', 0);
+        $this->assertSame(0, DB::table('message_search_index')->count());
+        $this->assertNull($room->memberships()->where('user_id', $other->id)->value('unread_at'));
+        Queue::assertNothingPushed();
+    }
+
+    public function test_shared_rooms_keep_the_first_unread_timestamp_and_direct_rooms_refresh_it(): void
+    {
+        [$user, $room] = $this->fixture();
+        $other = User::create(['name' => 'Other', 'role' => 0, 'status' => 0]);
+        $old = now()->subDay();
+        $membership = Membership::create(['room_id' => $room->id, 'user_id' => $other->id, 'involvement' => 'everything', 'unread_at' => $old, 'updated_at' => $old]);
+        $before = $membership->fresh()->getRawOriginal();
+        app(MessageWriter::class)->create($room, $user, ['body' => 'Already unread']);
+        $membership->refresh();
+        $this->assertSame($before['unread_at'], $membership->getRawOriginal('unread_at'));
+        $this->assertSame($before['updated_at'], $membership->getRawOriginal('updated_at'));
+
+        $direct = Room::create(['type' => 'Rooms::Direct', 'creator_id' => $user->id]);
+        Membership::create(['room_id' => $direct->id, 'user_id' => $user->id, 'involvement' => 'everything']);
+        $recipient = Membership::create(['room_id' => $direct->id, 'user_id' => $other->id, 'involvement' => 'everything', 'unread_at' => $old, 'updated_at' => $old]);
+        $message = app(MessageWriter::class)->create($direct, $user, ['body' => 'Direct recency']);
+        $recipient->refresh();
+        $this->assertSame($message->getRawOriginal('created_at'), $recipient->getRawOriginal('unread_at'));
+        $this->assertNotSame($before['updated_at'], $recipient->getRawOriginal('updated_at'));
+    }
+
+    public function test_mentions_resolve_current_records_after_entering_the_write_transaction(): void
+    {
+        [$user, $room] = $this->fixture();
+        $sgid = app(RailsCrypto::class)->sgid($user->id);
+        $changed = false;
+        DB::connection()->beforeStartingTransaction(function () use ($user, &$changed) {
+            if (! $changed) {
+                DB::table('users')->where('id', $user->id)->update(['name' => 'Current mention']);
+                $changed = true;
+            }
+        });
+
+        $message = app(MessageWriter::class)->create($room, $user, ['body' => '<p><action-text-attachment sgid="'.$sgid.'"></action-text-attachment></p>']);
+        $this->assertTrue($changed);
+        $this->assertSame('@Current mention', DB::table('message_search_index')->where('rowid', $message->id)->value('body'));
     }
 
     public function test_mentions_preserve_signed_reference_and_safe_html(): void
@@ -643,5 +703,56 @@ PHP;
             $response = $this->withUnencryptedCookie('session_token', $cookie)->get('/rooms/'.$room->id);
             $this->assertTrue($response->isRedirect(url('/session/new')), $revocation.' still authenticated with status '.$response->getStatusCode());
         }
+    }
+
+    public function test_repeated_reads_skip_session_and_room_cookies_until_half_the_lifetime(): void
+    {
+        [$user, $room] = $this->fixture();
+        $other = Room::create(['name' => 'Random', 'type' => 'Rooms::Open', 'creator_id' => $user->id]);
+        Membership::create(['room_id' => $other->id, 'user_id' => $user->id, 'involvement' => 'mentions']);
+        $this->auth($user);
+        $directory = storage_path('framework/testing/session-refresh-'.bin2hex(random_bytes(4)));
+        mkdir($directory, 0755, true);
+        $this->beforeApplicationDestroyed(fn () => (new Process(['rm', '-rf', $directory]))->mustRun());
+        config([
+            'session.driver' => 'file',
+            'session.files' => $directory,
+            'session.lifetime' => 1,
+            'session.lottery' => [0, 100],
+        ]);
+
+        $path = '/rooms/'.$room->id;
+        $name = config('session.cookie');
+        $first = $this->get($path)->assertOk();
+        $sessionId = $first->getCookie($name)->getValue();
+        $this->assertSame((string) $room->id, $first->getCookie('last_room')->getValue());
+        $file = $directory.'/'.$sessionId;
+        $this->assertFileExists($file);
+        $stored = file_get_contents($file);
+
+        $again = $this->withCookie($name, $sessionId)->withCookie('last_room', (string) $room->id)->get($path)->assertOk();
+        $again->assertCookieMissing($name);
+        $again->assertCookieMissing('last_room');
+        $this->assertSame($stored, file_get_contents($file));
+
+        $moved = $this->withCookie($name, $sessionId)->withCookie('last_room', (string) $room->id)->get('/rooms/'.$other->id)->assertOk();
+        $this->assertSame((string) $other->id, $moved->getCookie('last_room')->getValue());
+        $moved->assertCookieMissing($name);
+
+        $payload = unserialize(file_get_contents($file));
+        $payload['_campfire_session_refreshed_at'] = time() - 31;
+        file_put_contents($file, serialize($payload));
+        clearstatcache(true, $file);
+
+        $reissued = $this->withCookie($name, $sessionId)->withCookie('last_room', (string) $other->id)->get('/rooms/'.$other->id)->assertOk();
+        $this->assertSame($sessionId, $reissued->getCookie($name)->getValue());
+        $reissued->assertCookieMissing('last_room');
+        $fresh = unserialize(file_get_contents($file));
+        $this->assertGreaterThan(time() - 5, $fresh['_campfire_session_refreshed_at']);
+
+        $quiet = $this->withCookie($name, $sessionId)->withCookie('last_room', (string) $other->id)->get('/rooms/'.$other->id)->assertOk();
+        $quiet->assertCookieMissing($name);
+        $quiet->assertCookieMissing('last_room');
+        $this->assertSame(serialize($fresh), file_get_contents($file));
     }
 }

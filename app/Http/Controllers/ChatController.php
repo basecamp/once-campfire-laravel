@@ -8,6 +8,7 @@ use App\Support\Broadcasts;
 use App\Support\MessageWriter;
 use App\Support\RichTextRenderer;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -31,8 +32,13 @@ final class ChatController extends Controller
             $messages = $query->orderByDesc('created_at')->limit(40)->get()->reverse();
         }
         $r->session()->put('last_room_id', $room->id);
+        $response = response()->view('rooms.show', compact('room', 'messages'));
+        // The permanent cookie is rewritten only when the room changes.
+        if ((string) $r->cookie('last_room') !== (string) $room->id) {
+            $response->withCookie(cookie('last_room', (string) $room->id, 60 * 24 * 365 * 20));
+        }
 
-        return response()->view('rooms.show', compact('room', 'messages'))->withCookie(cookie('last_room', (string) $room->id, 60 * 24 * 365 * 20));
+        return $response;
     }
 
     public function messages(Request $r, int $room)
@@ -78,13 +84,27 @@ final class ChatController extends Controller
     {
         $room = $this->findRoom($r, $room);
         $a = $r->validate(['message' => 'required|array', 'message.body' => 'nullable|string', 'message.client_message_id' => 'nullable|string|max:255', 'message.attachment' => 'nullable']);
-        $m = app(MessageWriter::class)->create($room, $r->user(), $r->hasFile('message.attachment') ? array_merge($a['message'], ['attachment' => $r->file('message.attachment')]) : $a['message'], true)->load(['creator', 'richText', 'attachment.blob.variantRecords', 'boosts.booster', 'room']);
+        $hasAttachment = $r->hasFile('message.attachment');
+        $m = app(MessageWriter::class)->create($room, $r->user(), $hasAttachment ? array_merge($a['message'], ['attachment' => $r->file('message.attachment')]) : $a['message'], true);
+        // The writer already holds the creator, room and new rich text; a new message has no boosts
+        // and, without an upload, no attachment. Only an upload's blob and variants are loaded.
+        $m->setRelation('creator', $r->user())->setRelation('room', $room)->setRelation('boosts', new EloquentCollection);
+        if (! $m->relationLoaded('richText')) {
+            $m->load('richText');
+        }
+        if ($hasAttachment || isset($a['message']['attachment'])) {
+            $m->load('attachment.blob.variantRecords');
+        } else {
+            $m->setRelation('attachment', null);
+        }
         $html = view('messages.message', ['message' => $m])->render();
         $stream = $this->stream('append', 'messages_room_'.$room->id, $html);
-        app(Broadcasts::class)->room($room->id, $stream);
+        // One locked outbox write for the room stream and every member's unread ping, in order.
+        $events = [['room_'.$room->id.'_messages', $stream]];
         foreach ($room->memberships()->pluck('user_id') as $user) {
-            app(Broadcasts::class)->publish('user_'.$user.'_unreads', ['roomId' => $room->id]);
+            $events[] = ['user_'.$user.'_unreads', ['roomId' => $room->id]];
         }
+        app(Broadcasts::class)->publishMany($events);
 
         return $r->expectsJson() ? response()->json($this->json($m), 201) : response($stream, 200)->header('Content-Type', 'text/vnd.turbo-stream.html; charset=utf-8');
     }
