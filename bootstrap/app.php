@@ -12,7 +12,8 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(web: __DIR__.'/../routes/web.php', commands: __DIR__.'/../routes/console.php')
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->encryptCookies(except: ['session_token', '_campfire_session']);
-        $middleware->web(remove: [PreventRequestForgery::class], append: [FetchMetadata::class, RailsSession::class]);
+        $middleware->append(FetchMetadata::class);
+        $middleware->web(remove: [PreventRequestForgery::class], append: [RailsSession::class]);
         if ($proxies = env('TRUSTED_PROXIES')) {
             $middleware->trustProxies(at: explode(',', $proxies));
         }

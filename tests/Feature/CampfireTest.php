@@ -58,7 +58,7 @@ final class CampfireTest extends TestCase
             ['POST', '/session'], ['POST', '/first_run'], ['POST', '/join/abcd-efgh-ijkl'],
             ['PATCH', '/session/transfers/invalid'], ['POST', '/rails/active_storage/direct_uploads'],
             ['POST', '/rooms/'.$room->id.'/messages'], ['PATCH', '/users/me/profile'],
-            ['DELETE', '/session'],
+            ['DELETE', '/session'], ['OPTIONS', '/rooms'], ['TRACE', '/rooms'],
         ] as [$method, $path]) {
             $this->call($method, $path, ['authenticity_token' => 'old-token'], [], [], ['HTTP_SEC_FETCH_SITE' => 'cross-site'])->assertStatus(422);
         }
