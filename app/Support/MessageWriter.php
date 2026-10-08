@@ -16,10 +16,9 @@ final class MessageWriter
 {
     public function create(Room $room, User $user, array $attributes, bool $webhooks = false): Message
     {
-        // Membership (as Rails checks it, before the write), sanitizing and an upload's file IO,
-        // analysis and variants happen before the write lock. Attachment plain text resolves
-        // current user/blob rows inside the transaction; ordinary text can be prepared here.
-        abort_unless($room->memberships()->where('user_id', $user->id)->exists(), 403);
+        // Sanitizing and an upload's file IO, analysis and variants happen before the write lock.
+        // Membership and attachment plain text resolve current rows inside the transaction;
+        // ordinary text can be prepared here.
         $renderer = app(RichTextRenderer::class);
         $body = $renderer->storage($attributes['body'] ?? '');
         $plain = preg_match('~<action-text-attachment\b~i', $body) === 1 ? null : $renderer->plain($body);
@@ -30,6 +29,7 @@ final class MessageWriter
         }
         try {
             return DB::transaction(function () use ($room, $user, $attributes, $webhooks, $blob, $renderer, $body, $plain, $hasEmbeds) {
+                abort_unless($room->memberships()->where('user_id', $user->id)->exists(), 403);
                 $plain ??= $renderer->plain($body);
                 // Plain inserts with one timestamp: the rows Eloquent's create() and Message::$touches
                 // (Rails' belongs_to :room, touch: true) write, without model events or a room reload.

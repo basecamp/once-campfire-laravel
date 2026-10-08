@@ -21,6 +21,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Route;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Symfony\Component\Process\Process;
 use Tests\TestCase;
 use Workerman\Connection\TcpConnection;
@@ -840,6 +841,35 @@ PHP;
                 Queue::assertNothingPushed();
             }
             $this->assertFileExists($source);
+        } finally {
+            (new Process(['rm', '-rf', $directory]))->mustRun();
+        }
+    }
+
+    public function test_membership_revoked_before_the_write_transaction_rejects_the_post_and_discards_the_upload(): void
+    {
+        [$user, $room] = $this->fixture();
+        $directory = storage_path('framework/testing/revoked-'.bin2hex(random_bytes(6)));
+        mkdir($directory.'/source', 0755, true);
+        config(['campfire.files' => $directory.'/files']);
+        $source = $directory.'/source/pixel.png';
+        file_put_contents($source, base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aY2kAAAAASUVORK5CYII='));
+        try {
+            // The controller has found the room; the membership goes away just before BEGIN.
+            DB::connection()->beforeStartingTransaction(fn () => $room->memberships()->where('user_id', $user->id)->delete());
+            try {
+                app(MessageWriter::class)->create($room, $user, ['body' => '<p>Revoked</p>', 'attachment' => new UploadedFile($source, 'pixel.png', 'image/png', null, true)]);
+                $this->fail('A revoked membership must not post.');
+            } catch (HttpException $error) {
+                $this->assertSame(403, $error->getStatusCode());
+            }
+            $this->assertDatabaseCount('messages', 0);
+            $this->assertDatabaseCount('action_text_rich_texts', 0);
+            $this->assertDatabaseCount('active_storage_blobs', 0);
+            $this->assertDatabaseCount('active_storage_attachments', 0);
+            $this->assertSame([], glob($directory.'/files/[0-9a-f][0-9a-f]/[0-9a-f][0-9a-f]/*'));
+            $this->assertSame([], glob($directory.'/files/variants/*'));
+            Queue::assertNothingPushed();
         } finally {
             (new Process(['rm', '-rf', $directory]))->mustRun();
         }
