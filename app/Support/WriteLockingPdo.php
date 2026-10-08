@@ -85,6 +85,8 @@ final class WriteLockingPdo extends PDO implements LocksWrites
             return false;
         }
         $deadline = hrtime(true) + $this->timeoutMilliseconds * 1000000;
+        // Writes hold the lock for well under a millisecond: poll soon, then back off to 1 ms.
+        $sleep = 25;
         while (! flock($this->handle, LOCK_EX | LOCK_NB, $wouldBlock)) {
             if (! $wouldBlock) {
                 return false;
@@ -95,7 +97,8 @@ final class WriteLockingPdo extends PDO implements LocksWrites
                 $exception->errorInfo = ['HY000', 5, 'database is locked (writer lock timeout)'];
                 throw $exception;
             }
-            usleep(min(1000, max(1, intdiv($remaining, 1000))));
+            usleep(min($sleep, max(1, intdiv($remaining, 1000))));
+            $sleep = min(1000, $sleep * 2);
         }
 
         return $this->held = true;

@@ -16,28 +16,32 @@ final class MessageWriter
 {
     public function create(Room $room, User $user, array $attributes, bool $webhooks = false): Message
     {
-        // Sanitizing and plain-text extraction depend only on the submitted body, and an upload's
-        // file IO, analysis and variants only on the file: do them before the write lock so the
-        // transaction holds it for the inserts alone. A non-member is refused before any file work
-        // (and again under the lock).
+        // Membership (as Rails checks it, before the write), sanitizing, plain-text extraction and
+        // an upload's file IO, analysis and variants all happen before the write lock, so the
+        // transaction holds it for the inserts alone.
+        abort_unless($room->memberships()->where('user_id', $user->id)->exists(), 403);
         $renderer = app(RichTextRenderer::class);
         $body = $renderer->storage($attributes['body'] ?? '');
         $plain = $renderer->plain($body);
         $hasEmbeds = preg_match('/sgid=[\"\']/', $body) === 1;
         $blob = null;
         if (isset($attributes['attachment'])) {
-            abort_unless($room->memberships()->where('user_id', $user->id)->exists(), 403);
             $blob = app(BlobStorage::class)->prepare($attributes['attachment']);
         }
         try {
             return DB::transaction(function () use ($room, $user, $attributes, $webhooks, $blob, $body, $plain, $hasEmbeds) {
-                abort_unless($room->memberships()->where('user_id', $user->id)->exists(), 403);
-                $message = $room->messages()->create(['creator_id' => $user->id, 'client_message_id' => $attributes['client_message_id'] ?? (string) Str::uuid()]);
+                // Plain inserts with one timestamp: the rows Eloquent's create() and Message::$touches
+                // (Rails' belongs_to :room, touch: true) write, without model events or a room reload.
+                $now = (new Message)->freshTimestampString();
+                $row = ['room_id' => $room->id, 'creator_id' => $user->id, 'client_message_id' => $attributes['client_message_id'] ?? (string) Str::uuid(), 'created_at' => $now, 'updated_at' => $now];
+                $message = (new Message)->newFromBuilder($row + ['id' => DB::table('messages')->insertGetId($row)])->setRelation('room', $room);
+                DB::table('rooms')->where('id', $room->id)->update(['updated_at' => $now]);
                 if ($blob) {
                     app(BlobStorage::class)->attach($message, $blob);
                 }
                 // A new message has no rich text, embeds or index row yet: insert directly.
-                $richText = RichText::create(['record_id' => $message->id, 'record_type' => 'Message', 'name' => 'body', 'body' => $body]);
+                $row = ['record_id' => $message->id, 'record_type' => 'Message', 'name' => 'body', 'body' => $body, 'created_at' => $now, 'updated_at' => $now];
+                $richText = (new RichText)->newFromBuilder($row + ['id' => DB::table('action_text_rich_texts')->insertGetId($row)]);
                 $message->setRelation('richText', $richText);
                 if ($hasEmbeds) {
                     $this->embeds($richText, $body);
@@ -45,15 +49,9 @@ final class MessageWriter
                 if ($blob?->filename && trim($plain) === '') {
                     $plain = $blob->filename;
                 }
-                $room->touch();
-                // Like Rails' after_create_commit (Message::Searchable#create_in_index, room receipt):
-                // index and unread marks commit right after the message, before the response.
-                DB::afterCommit(function () use ($room, $user, $message, $plain) {
-                    DB::transaction(function () use ($room, $user, $message, $plain) {
-                        DB::insert('INSERT INTO message_search_index(rowid,body) VALUES(?,?)', [$message->id, $plain]);
-                        $room->memberships()->where('user_id', '!=', $user->id)->where('involvement', '!=', 'invisible')->where(fn ($q) => $q->whereNull('connected_at')->orWhere('connected_at', '<', now()->subMinute()))->update(['unread_at' => $message->created_at, 'updated_at' => now()]);
-                    });
-                });
+                // Index and unread marks commit with the message, before the response.
+                DB::insert('INSERT INTO message_search_index(rowid,body) VALUES(?,?)', [$message->id, $plain]);
+                $room->memberships()->where('user_id', '!=', $user->id)->where('involvement', '!=', 'invisible')->where(fn ($q) => $q->whereNull('connected_at')->orWhere('connected_at', '<', now()->subMinute()))->update(['unread_at' => $message->created_at, 'updated_at' => now()]);
                 if ($room->type === 'Rooms::Direct') {
                     app(SidebarEvents::class)->refresh($room->users()->pluck('users.id')->all());
                 }
