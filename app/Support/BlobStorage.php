@@ -58,28 +58,50 @@ final class BlobStorage
         return '/rails/active_storage/blobs/redirect/'.app(RailsCrypto::class)->signedId($blob->id, 'ActiveStorage::Blob', 'blob_id').'/'.rawurlencode($blob->filename);
     }
 
-    public function attach(Message $message, UploadedFile|string $source): Blob
+    /**
+     * Everything an attachment needs before the database: the upload written, analyzed and
+     * thumbnailed (or the signed blob found and thumbnailed), so the write transaction that
+     * attach() runs in holds the lock for rows alone. An upload's blob is returned unsaved; if
+     * any step fails, its files are removed.
+     */
+    public function prepare(UploadedFile|string $source): Blob
     {
         if (is_string($source)) {
-            $id = app(RailsCrypto::class)->verifyId($source, 'ActiveStorage::Blob', 'blob_id');
-            $blob = Blob::findOrFail($id);
-        } else {
-            $blob = $this->store($source);
+            $blob = Blob::findOrFail(app(RailsCrypto::class)->verifyId($source, 'ActiveStorage::Blob', 'blob_id'));
+            $this->thumbnail($blob);
+
+            return $blob;
         }
+        $blob = $this->write($source);
         try {
-            if (in_array($blob->content_type, ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf', 'video/mp4', 'video/webm'])) {
-                app(Media::class)->variant($blob, ['resize_to_limit' => [1200, 800], 'format' => $this->thumbnailFormat($blob)]);
-            }
+            $this->thumbnail($blob);
         } catch (\Throwable $error) {
-            if ($source instanceof UploadedFile) {
-                $this->deleteFiles($blob);
-            }
+            $this->deleteFiles($blob);
             throw $error;
+        }
+
+        return $blob;
+    }
+
+    /** Attaches a prepare()d blob: inserts an upload's row, or checks a signed blob still exists. */
+    public function attach(Message $message, Blob $blob): Blob
+    {
+        if ($blob->exists) {
+            Blob::findOrFail($blob->id);
+        } else {
+            $this->insert($blob);
         }
         $message->attachment()->delete();
         Attachment::create(['name' => 'attachment', 'record_type' => 'Message', 'record_id' => $message->id, 'blob_id' => $blob->id, 'created_at' => now()]);
 
         return $blob;
+    }
+
+    private function thumbnail(Blob $blob): void
+    {
+        if (in_array($blob->content_type, ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf', 'video/mp4', 'video/webm'])) {
+            app(Media::class)->variant($blob, ['resize_to_limit' => [1200, 800], 'format' => $this->thumbnailFormat($blob)]);
+        }
     }
 
     public function deleteFiles(Blob $blob): void
@@ -108,11 +130,30 @@ final class BlobStorage
 
     public function store(UploadedFile $source): Blob
     {
+        $blob = $this->write($source);
+        $this->insert($blob);
+
+        return $blob;
+    }
+
+    /** Writes and analyzes an upload into an unsaved blob; on failure its file is removed. */
+    private function write(UploadedFile $source): Blob
+    {
         $data = file_get_contents($source->getRealPath());
-        $blob = Blob::create(['key' => bin2hex(random_bytes(14)), 'filename' => basename($source->getClientOriginalName()), 'content_type' => $source->getMimeType(), 'metadata' => '{}', 'service_name' => 'local', 'byte_size' => strlen($data), 'checksum' => base64_encode(md5($data, true)), 'created_at' => now()]);
-        if (DB::transactionLevel() > 0) {
-            $this->pendingFiles[$blob->id] = ['blob' => $blob, 'level' => DB::transactionLevel()];
+        $blob = new Blob(['key' => bin2hex(random_bytes(14)), 'filename' => basename($source->getClientOriginalName()), 'content_type' => $source->getMimeType(), 'metadata' => '{}', 'service_name' => 'local', 'byte_size' => strlen($data), 'checksum' => base64_encode(md5($data, true)), 'created_at' => now()]);
+        try {
+            $blob->metadata = json_encode($this->analyze($blob, $data));
+        } catch (\Throwable $error) {
+            $this->deleteFiles($blob);
+            throw $error;
         }
+
+        return $blob;
+    }
+
+    /** Writes the upload's file and returns the metadata Active Storage's analyzers record. */
+    private function analyze(Blob $blob, string $data): array
+    {
         $path = $this->path($blob);
         if (! is_dir(dirname($path))) {
             mkdir(dirname($path), 0755, true);
@@ -144,9 +185,23 @@ final class BlobStorage
                 }
             }
         }
-        $blob->update(['metadata' => json_encode($metadata)]);
 
-        return $blob;
+        return $metadata;
+    }
+
+    /** Inserts a written blob's row; inside a transaction, a rollback removes its files. */
+    private function insert(Blob $blob): void
+    {
+        $blob->created_at = now();
+        try {
+            $blob->save();
+        } catch (\Throwable $error) {
+            $this->deleteFiles($blob);
+            throw $error;
+        }
+        if (DB::transactionLevel() > 0) {
+            $this->pendingFiles[$blob->id] = ['blob' => $blob, 'level' => DB::transactionLevel()];
+        }
     }
 
     public function attachTo(string $type, int $id, string $name, UploadedFile $source): Blob
