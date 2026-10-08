@@ -2,9 +2,12 @@
 
 namespace App\Http\Middleware;
 
+use App\Models\Room;
 use App\Support\ResponseCache;
 use Closure;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Symfony\Component\HttpFoundation\AcceptHeader;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -25,10 +28,14 @@ final class CacheResponses
             return $next($request);
         }
         // Authorization is never supplied by a cached response.
+        // Membership is checked against the database on every request; the Room model itself is
+        // only loaded when the page has to be rendered.
         $room = null;
         if (preg_match('~^/rooms/(\d+)~', $request->getPathInfo(), $match)) {
-            $room = $request->user()->rooms()->findOrFail((int) $match[1]);
-            $request->attributes->set('campfire.authorized_room', $room);
+            $room = (int) $match[1];
+            if (DB::selectOne('SELECT 1 FROM memberships WHERE user_id = ? AND room_id = ? LIMIT 1', [$request->user()->id, $room]) === null) {
+                throw (new ModelNotFoundException)->setModel(Room::class, [$room]);
+            }
         }
         $cache = app(ResponseCache::class);
         $gzip = $this->acceptsGzip($request);
@@ -43,11 +50,16 @@ final class CacheResponses
         if ($entry !== null) {
             $response = response($entry['body'], 200, $entry['headers']);
             if ($room !== null && ! str_ends_with($request->path(), '/messages')) {
-                $request->session()->put('last_room_id', $room->id);
-                $response->headers->setCookie(cookie('last_room', (string) $room->id, 60 * 24 * 365 * 20));
+                $request->session()->put('last_room_id', $room);
+                if ((string) $request->cookie('last_room') !== (string) $room) {
+                    $response->headers->setCookie(cookie('last_room', (string) $room, 60 * 24 * 365 * 20));
+                }
             }
 
             return $response;
+        }
+        if ($room !== null) {
+            $request->attributes->set('campfire.authorized_room', $request->user()->rooms()->findOrFail($room));
         }
         $response = $next($request);
         $body = $response->getContent();

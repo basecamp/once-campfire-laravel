@@ -644,4 +644,55 @@ PHP;
             $this->assertTrue($response->isRedirect(url('/session/new')), $revocation.' still authenticated with status '.$response->getStatusCode());
         }
     }
+
+    public function test_repeated_reads_skip_session_and_room_cookies_until_half_the_lifetime(): void
+    {
+        [$user, $room] = $this->fixture();
+        $other = Room::create(['name' => 'Random', 'type' => 'Rooms::Open', 'creator_id' => $user->id]);
+        Membership::create(['room_id' => $other->id, 'user_id' => $user->id, 'involvement' => 'mentions']);
+        $this->auth($user);
+        $directory = storage_path('framework/testing/session-refresh-'.bin2hex(random_bytes(4)));
+        mkdir($directory, 0755, true);
+        $this->beforeApplicationDestroyed(fn () => (new Process(['rm', '-rf', $directory]))->mustRun());
+        config([
+            'session.driver' => 'file',
+            'session.files' => $directory,
+            'session.lifetime' => 1,
+            'session.lottery' => [0, 100],
+        ]);
+
+        $path = '/rooms/'.$room->id;
+        $name = config('session.cookie');
+        $first = $this->get($path)->assertOk();
+        $sessionId = $first->getCookie($name)->getValue();
+        $this->assertSame((string) $room->id, $first->getCookie('last_room')->getValue());
+        $file = $directory.'/'.$sessionId;
+        $this->assertFileExists($file);
+        $stored = file_get_contents($file);
+
+        $again = $this->withCookie($name, $sessionId)->withCookie('last_room', (string) $room->id)->get($path)->assertOk();
+        $again->assertCookieMissing($name);
+        $again->assertCookieMissing('last_room');
+        $this->assertSame($stored, file_get_contents($file));
+
+        $moved = $this->withCookie($name, $sessionId)->withCookie('last_room', (string) $room->id)->get('/rooms/'.$other->id)->assertOk();
+        $this->assertSame((string) $other->id, $moved->getCookie('last_room')->getValue());
+        $moved->assertCookieMissing($name);
+
+        $payload = unserialize(file_get_contents($file));
+        $payload['_campfire_session_refreshed_at'] = time() - 31;
+        file_put_contents($file, serialize($payload));
+        clearstatcache(true, $file);
+
+        $reissued = $this->withCookie($name, $sessionId)->withCookie('last_room', (string) $other->id)->get('/rooms/'.$other->id)->assertOk();
+        $this->assertSame($sessionId, $reissued->getCookie($name)->getValue());
+        $reissued->assertCookieMissing('last_room');
+        $fresh = unserialize(file_get_contents($file));
+        $this->assertGreaterThan(time() - 5, $fresh['_campfire_session_refreshed_at']);
+
+        $quiet = $this->withCookie($name, $sessionId)->withCookie('last_room', (string) $other->id)->get('/rooms/'.$other->id)->assertOk();
+        $quiet->assertCookieMissing($name);
+        $quiet->assertCookieMissing('last_room');
+        $this->assertSame(serialize($fresh), file_get_contents($file));
+    }
 }
