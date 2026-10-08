@@ -29,6 +29,12 @@ with four hardware cores allocated to each app.
 
 ## Known differences
 
+- Unchanged Laravel session data and cookies refresh at half the configured lifetime,
+  reducing file writes on repeated reads. Campfire authentication still reads current
+  SQLite session and user rows on every request. The last-room cookie changes only
+  when its value changes. Shared rooms retain their first unread timestamp; direct
+  rooms refresh it for sidebar recency, following Rails #336.
+
 - Authenticated room, message-list, sidebar and search HTML bodies share a bounded
   cache with message and boost fragments: 64 MiB per persistent Octane worker,
   disabled with `CAMPFIRE_RESPONSE_CACHE_MB=0`.

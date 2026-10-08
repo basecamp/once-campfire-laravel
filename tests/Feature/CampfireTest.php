@@ -15,6 +15,7 @@ use App\Support\Presence;
 use App\Support\RailsCrypto;
 use App\Support\RichTextRenderer;
 use App\Support\SocketSessions;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -267,6 +268,65 @@ final class CampfireTest extends TestCase
         }
         $this->assertDatabaseCount('messages', 0);
         Queue::assertNothingPushed();
+    }
+
+    public function test_failed_unread_update_rolls_back_message_rich_text_and_search_index(): void
+    {
+        [$user, $room] = $this->fixture();
+        $other = User::create(['name' => 'Other', 'role' => 0, 'status' => 0]);
+        Membership::create(['room_id' => $room->id, 'user_id' => $other->id, 'involvement' => 'everything']);
+        DB::unprepared("CREATE TRIGGER fail_unread BEFORE UPDATE OF unread_at ON memberships BEGIN SELECT RAISE(ABORT, 'unread update failed'); END");
+
+        try {
+            app(MessageWriter::class)->create($room, $user, ['body' => '<p>Atomic message</p>']);
+            $this->fail('The unread update must fail.');
+        } catch (QueryException $error) {
+            $this->assertStringContainsString('unread update failed', $error->getMessage());
+        }
+
+        $this->assertDatabaseCount('messages', 0);
+        $this->assertDatabaseCount('action_text_rich_texts', 0);
+        $this->assertSame(0, DB::table('message_search_index')->count());
+        $this->assertNull($room->memberships()->where('user_id', $other->id)->value('unread_at'));
+        Queue::assertNothingPushed();
+    }
+
+    public function test_shared_rooms_keep_the_first_unread_timestamp_and_direct_rooms_refresh_it(): void
+    {
+        [$user, $room] = $this->fixture();
+        $other = User::create(['name' => 'Other', 'role' => 0, 'status' => 0]);
+        $old = now()->subDay();
+        $membership = Membership::create(['room_id' => $room->id, 'user_id' => $other->id, 'involvement' => 'everything', 'unread_at' => $old, 'updated_at' => $old]);
+        $before = $membership->fresh()->getRawOriginal();
+        app(MessageWriter::class)->create($room, $user, ['body' => 'Already unread']);
+        $membership->refresh();
+        $this->assertSame($before['unread_at'], $membership->getRawOriginal('unread_at'));
+        $this->assertSame($before['updated_at'], $membership->getRawOriginal('updated_at'));
+
+        $direct = Room::create(['type' => 'Rooms::Direct', 'creator_id' => $user->id]);
+        Membership::create(['room_id' => $direct->id, 'user_id' => $user->id, 'involvement' => 'everything']);
+        $recipient = Membership::create(['room_id' => $direct->id, 'user_id' => $other->id, 'involvement' => 'everything', 'unread_at' => $old, 'updated_at' => $old]);
+        $message = app(MessageWriter::class)->create($direct, $user, ['body' => 'Direct recency']);
+        $recipient->refresh();
+        $this->assertSame($message->getRawOriginal('created_at'), $recipient->getRawOriginal('unread_at'));
+        $this->assertNotSame($before['updated_at'], $recipient->getRawOriginal('updated_at'));
+    }
+
+    public function test_mentions_resolve_current_records_after_entering_the_write_transaction(): void
+    {
+        [$user, $room] = $this->fixture();
+        $sgid = app(RailsCrypto::class)->sgid($user->id);
+        $changed = false;
+        DB::connection()->beforeStartingTransaction(function () use ($user, &$changed) {
+            if (! $changed) {
+                DB::table('users')->where('id', $user->id)->update(['name' => 'Current mention']);
+                $changed = true;
+            }
+        });
+
+        $message = app(MessageWriter::class)->create($room, $user, ['body' => '<p><action-text-attachment sgid="'.$sgid.'"></action-text-attachment></p>']);
+        $this->assertTrue($changed);
+        $this->assertSame('@Current mention', DB::table('message_search_index')->where('rowid', $message->id)->value('body'));
     }
 
     public function test_mentions_preserve_signed_reference_and_safe_html(): void

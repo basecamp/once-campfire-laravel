@@ -16,20 +16,21 @@ final class MessageWriter
 {
     public function create(Room $room, User $user, array $attributes, bool $webhooks = false): Message
     {
-        // Membership (as Rails checks it, before the write), sanitizing, plain-text extraction and
-        // an upload's file IO, analysis and variants all happen before the write lock, so the
-        // transaction holds it for the inserts alone.
+        // Membership (as Rails checks it, before the write), sanitizing and an upload's file IO,
+        // analysis and variants happen before the write lock. Attachment plain text resolves
+        // current user/blob rows inside the transaction; ordinary text can be prepared here.
         abort_unless($room->memberships()->where('user_id', $user->id)->exists(), 403);
         $renderer = app(RichTextRenderer::class);
         $body = $renderer->storage($attributes['body'] ?? '');
-        $plain = $renderer->plain($body);
+        $plain = preg_match('~<action-text-attachment\b~i', $body) === 1 ? null : $renderer->plain($body);
         $hasEmbeds = preg_match('/sgid=[\"\']/', $body) === 1;
         $blob = null;
         if (isset($attributes['attachment'])) {
             $blob = app(BlobStorage::class)->prepare($attributes['attachment']);
         }
         try {
-            return DB::transaction(function () use ($room, $user, $attributes, $webhooks, $blob, $body, $plain, $hasEmbeds) {
+            return DB::transaction(function () use ($room, $user, $attributes, $webhooks, $blob, $renderer, $body, $plain, $hasEmbeds) {
+                $plain ??= $renderer->plain($body);
                 // Plain inserts with one timestamp: the rows Eloquent's create() and Message::$touches
                 // (Rails' belongs_to :room, touch: true) write, without model events or a room reload.
                 $now = (new Message)->freshTimestampString();
@@ -49,9 +50,14 @@ final class MessageWriter
                 if ($blob?->filename && trim($plain) === '') {
                     $plain = $blob->filename;
                 }
-                // Index and unread marks commit with the message, before the response.
                 DB::insert('INSERT INTO message_search_index(rowid,body) VALUES(?,?)', [$message->id, $plain]);
-                $room->memberships()->where('user_id', '!=', $user->id)->where('involvement', '!=', 'invisible')->where(fn ($q) => $q->whereNull('connected_at')->orWhere('connected_at', '<', now()->subMinute()))->update(['unread_at' => $message->created_at, 'updated_at' => now()]);
+                // Shared rooms keep their first unread timestamp; directs refresh sidebar recency.
+                // Matches the unread policy adopted in Rails PR #336.
+                $unread = $room->memberships()->where('user_id', '!=', $user->id)->where('involvement', '!=', 'invisible')->where(fn ($q) => $q->whereNull('connected_at')->orWhere('connected_at', '<', now()->subMinute()));
+                if (! $room->isDirect()) {
+                    $unread->whereNull('unread_at');
+                }
+                $unread->update(['unread_at' => $message->created_at, 'updated_at' => now()]);
                 if ($room->type === 'Rooms::Direct') {
                     app(SidebarEvents::class)->refresh($room->users()->pluck('users.id')->all());
                 }

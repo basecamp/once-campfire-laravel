@@ -20,7 +20,7 @@
     },
     "messages": {
       "status": "verified",
-      "evidence": "Real create/update/delete, FTS, unreads, commit/rollback notification behavior verified in PHPUnit and independent HTTP."
+      "evidence": "Real create/update/delete, FTS, unreads, commit/rollback notification behavior verified in PHPUnit and independent HTTP. Native regressions keep new-message/rich-text/search/unread writes atomic on failure, resolve mention records inside the write transaction, retain shared-room first-unread timestamps and refresh direct-room recency."
     },
     "richtext": {
       "status": "pending"
