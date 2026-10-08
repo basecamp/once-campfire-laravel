@@ -1,1 +1,1 @@
-@extends('layouts.app')@section('content')<h1>Custom styles</h1><form action="/account/custom_styles" method="post">@csrf @method('PATCH')<textarea name="account[custom_styles]">{{ $styles }}</textarea><button>Save</button></form>@endsection
+@extends('layouts.app')@section('content')<h1>Custom styles</h1><form action="/account/custom_styles" method="post"> @method('PATCH')<textarea name="account[custom_styles]">{{ $styles }}</textarea><button>Save</button></form>@endsection

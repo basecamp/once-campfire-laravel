@@ -26,7 +26,7 @@
 <a href="/searches" class="btn flex-item-no-shrink margin-block-end composer__context-btn" style="view-transition-name: input-switcher"><img src="{{ $assets->path('search.svg') }}" width="20" height="20" aria-hidden="true"><span class="for-screen-reader">Search</span></a>
 <turbo-frame id="composer-frame">
 <form id="composer" action="/rooms/{{ $room->id }}/messages" method="post" class="margin-block flex-item-grow contain" data-controller="composer drop-target" data-action="dragenter->drop-target#dragenter dragover->drop-target#dragover drop->drop-target#drop drop-target:drop@window->composer#dropFiles lexxy:file-accept->composer#preventAttachment refresh-room:online@window->composer#online typing-notifications#stop paste->composer#pasteFiles turbo:submit-end->composer#submitEnd refresh-room:offline@window->composer#offline" data-composer-messages-outlet="#message-area" data-composer-toolbar-class="composer--rich-text" data-composer-room-id-value="{{ $room->id }}">
-@csrf<input type="hidden" name="authenticity_token" value="{{ csrf_token() }}">
+
 <fieldset data-composer-target="fields" contents><div class="flex flex-column"><div class="composer__filelist flex flex--align-center gap flex-wrap" data-composer-target="fileList"></div>
 <div class="flex composer__input input input--actor fill-white min-width" style="--input-border-radius: 1.3rem"><div class="flex align-end gap full-width">
 <img src="{{ $assets->path('messages-outlined.svg') }}" class="composer__input-hint colorize--black" width="22" height="22" aria-hidden="true" style="view-transition-name: input-btn;">

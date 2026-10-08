@@ -62,7 +62,7 @@ final class ResponseCacheTest extends TestCase
         return $cookie;
     }
 
-    public function test_hot_body_reuses_rendering_but_keeps_fresh_tokens_cookies_and_literal_text(): void
+    public function test_hot_body_reuses_complete_html_without_tokens_and_keeps_cookies_and_literal_text(): void
     {
         $first = base64_encode(str_repeat('a', 32));
         $second = base64_encode(str_repeat('b', 32));
@@ -72,16 +72,46 @@ final class ResponseCacheTest extends TestCase
             $renders++;
         });
         $this->csrf($first);
-        $this->get('/rooms/'.$this->room->id)->assertOk()->assertSee('content="'.$first.'"', false);
+        $this->get('/rooms/'.$this->room->id)->assertOk()->assertDontSee('csrf-token', false);
         $secondCookie = $this->csrf($second);
         $response = $this->get('/rooms/'.$this->room->id)->assertOk();
-        $response->assertSee('content="'.$second.'"', false)->assertSee($first, false);
+        $response->assertDontSee('csrf-token', false)->assertSee($first, false);
         $this->assertSame(1, $renders);
-        $this->assertSame($second, session()->token());
         $response->assertCookie('last_room');
         $response->assertCookieMissing('_campfire_session');
         $payload = app(RailsCrypto::class)->decryptCookie('_campfire_session', $secondCookie);
         $this->assertSame($second, $payload['_csrf_token']);
+    }
+
+    public function test_complete_gzip_reuse_negotiates_quality_and_keeps_cookies_fresh(): void
+    {
+        app(MessageWriter::class)->create($this->room, $this->user, ['body' => 'literal csrf-token=unchanged __csrf_token__'], false);
+        $path = '/rooms/'.$this->room->id;
+        $renders = 0;
+        View::composer('rooms.show', function () use (&$renders) {
+            $renders++;
+        });
+        $identity = $this->get($path)->assertOk()->getContent();
+        $first = $this->get($path, ['Accept-Encoding' => 'gzip'])->assertOk();
+        $first->assertHeader('Content-Encoding', 'gzip');
+        $this->assertSame($identity, gzdecode($first->getContent()));
+        $second = $this->get($path, ['Accept-Encoding' => 'gzip'])->assertOk();
+        $this->assertSame($first->getContent(), $second->getContent());
+        $second->assertCookie('last_room');
+        $this->assertSame(2, $renders);
+        foreach (['gzip;q=0', 'br', 'gzip;q=0, *;q=1', 'gzip;q=.5, identity;q=1'] as $header) {
+            $response = $this->get($path, ['Accept-Encoding' => $header])->assertOk();
+            $response->assertHeaderMissing('Content-Encoding');
+            $this->assertSame($identity, $response->getContent());
+        }
+        $this->foreign->exec("UPDATE users SET name='Gzip foreign name'");
+        $fresh = $this->get($path, ['Accept-Encoding' => 'gzip'])->assertOk();
+        $this->assertStringContainsString('Gzip foreign name', gzdecode($fresh->getContent()));
+        $conditional = $this->get($path, ['Accept-Encoding' => 'gzip', 'If-None-Match' => 'unmatched'])->assertOk();
+        $conditional->assertHeaderMissing('Content-Encoding');
+        $this->assertStringContainsString('Gzip foreign name', $conditional->getContent());
+        $this->foreign->exec('DELETE FROM sessions');
+        $this->get($path, ['Accept-Encoding' => 'gzip'])->assertRedirect('/session/new');
     }
 
     public function test_local_and_foreign_commits_refresh_profiles_styles_and_unversioned_message_text(): void

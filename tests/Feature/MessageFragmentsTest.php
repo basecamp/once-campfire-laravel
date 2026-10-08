@@ -53,7 +53,7 @@ final class MessageFragmentsTest extends TestCase
         return app(MessageWriter::class)->create($room, $user, ['body' => 'token-one'], false);
     }
 
-    public function test_cached_fragments_use_the_current_session_token_and_preserve_message_text(): void
+    public function test_cached_fragments_are_complete_tokenless_html_and_preserve_message_text(): void
     {
         $message = $this->message();
         $fragments = app(MessageFragments::class);
@@ -61,11 +61,10 @@ final class MessageFragmentsTest extends TestCase
         $before = $this->render($message);
         session()->put('_token', 'token-two');
         $after = $this->render($message);
-        $this->assertStringContainsString('name="_token" value="token-one"', $before);
-        $this->assertStringContainsString('name="_token" value="token-two"', $after);
-        $this->assertStringNotContainsString('name="_token" value="token-one"', $after);
+        $this->assertSame($before, $after);
+        $this->assertStringNotContainsString('name="_token"', $after);
+        $this->assertStringNotContainsString('authenticity_token', $after);
         $this->assertStringContainsString('token-one', $after);
-        $this->assertSame('token-two', csrf_token());
         $message->load(['creator', 'room', 'boosts.booster']);
         $cache = app(ResponseCache::class);
         $parts = $cache->get($fragments->messageKey($message), $cache->epoch());

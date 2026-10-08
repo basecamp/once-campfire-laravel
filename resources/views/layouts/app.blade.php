@@ -7,7 +7,7 @@
 <meta name="view-transition" content="same-origin"><meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)"><meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="csrf-token" content="{{ csrf_token() }}"><meta name="csrf-param" content="authenticity_token"><meta name="action-cable-url" content="/cable">
+<meta name="action-cable-url" content="/cable">
 @if(isset($currentUser))
 <meta name="current-user-id" content="{{ $currentUser->id }}"><meta name="current-user-name" content="{{ $currentUser->name }}">
 @endif

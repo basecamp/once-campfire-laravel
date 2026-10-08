@@ -95,19 +95,19 @@ final class OctaneWorkerIsolationTest extends TestCase
         parent::tearDown();
     }
 
-    public function test_users_csrf_tokens_and_shared_view_data_do_not_leak_between_requests(): void
+    public function test_tokenless_users_and_shared_view_data_do_not_leak_between_requests(): void
     {
         $alice = $this->users['alice'];
         $bob = $this->users['bob'];
 
-        // 1. Anonymous: login page. Its CSRF token lives in the Rails session cookie.
+        // Anonymous login and signed-in pages require no CSRF tokens.
         $login = $this->request('GET', '/session/new');
         $this->assertSame(200, $login->getStatusCode());
         $this->assertNoCurrentUser($login);
-        $anonymousToken = $this->csrfToken($login);
+        $this->assertTokenless($login);
 
-        // 2. Alice signs in with that token.
-        $signedIn = $this->request('POST', '/session', ['email_address' => $alice['email'], 'password' => 'secret123456', 'authenticity_token' => $anonymousToken], $this->cookies($login));
+        // Alice signs in without a token.
+        $signedIn = $this->request('POST', '/session', ['email_address' => $alice['email'], 'password' => 'secret123456'], $this->cookies($login));
         $this->assertSame(302, $signedIn->getStatusCode(), (string) $signedIn->getContent());
         $aliceCookies = $this->cookies($signedIn);
         $this->assertArrayHasKey('session_token', $aliceCookies);
@@ -116,7 +116,7 @@ final class OctaneWorkerIsolationTest extends TestCase
         $aliceRoom = $this->request('GET', '/rooms/'.$this->room, [], $aliceCookies);
         $this->assertSame(200, $aliceRoom->getStatusCode());
         $this->assertCurrentUser($aliceRoom, $alice);
-        $aliceToken = $this->csrfToken($aliceRoom);
+        $this->assertTokenless($aliceRoom);
         $aliceCookies = $this->cookies($aliceRoom) + $aliceCookies;
 
         // 4. A signed-out visitor right after Alice, on the same worker: no trace of her.
@@ -124,7 +124,7 @@ final class OctaneWorkerIsolationTest extends TestCase
         $this->assertSame(200, $anonymous->getStatusCode());
         $this->assertNoCurrentUser($anonymous);
         $this->assertStringNotContainsString($alice['name'], (string) $anonymous->getContent());
-        $this->assertNotContains($this->csrfToken($anonymous), [$anonymousToken, $aliceToken]);
+        $this->assertTokenless($anonymous);
         $anonymousRedirect = $this->request('GET', '/rooms/'.$this->room);
         $this->assertSame(302, $anonymousRedirect->getStatusCode());
         $this->assertStringEndsWith('/session/new', $anonymousRedirect->headers->get('Location'));
@@ -134,28 +134,27 @@ final class OctaneWorkerIsolationTest extends TestCase
         $bobRoom = $this->request('GET', '/rooms/'.$this->room, [], $bobCookies);
         $this->assertSame(200, $bobRoom->getStatusCode());
         $this->assertCurrentUser($bobRoom, $bob);
-        $bobToken = $this->csrfToken($bobRoom);
-        $this->assertNotSame($aliceToken, $bobToken);
+        $this->assertTokenless($bobRoom);
         $bobCookies = $this->cookies($bobRoom) + $bobCookies;
         $sidebar = $this->request('GET', '/users/me/sidebar', [], $bobCookies);
         $this->assertSame(200, $sidebar->getStatusCode());
         $personal = $this->worker->application()->make(RailsCrypto::class)->streamName(rtrim(base64_encode('gid://campfire/User/'.$bob['id']), '=').':rooms');
         $this->assertStringContainsString($personal, (string) $sidebar->getContent());
 
-        // 6. Alice's CSRF token is worthless with Bob's session; Bob's own works and posts as Bob.
-        $forged = $this->request('POST', '/rooms/'.$this->room.'/messages', ['message' => ['body' => '<div>forged</div>'], 'authenticity_token' => $aliceToken], $bobCookies);
+        // A cross-site request fails even with an old token; a same-origin write posts as Bob.
+        $forged = $this->request('POST', '/rooms/'.$this->room.'/messages', ['message' => ['body' => '<div>forged</div>'], 'authenticity_token' => 'old-tab-token'], $bobCookies, ['HTTP_SEC_FETCH_SITE' => 'cross-site']);
         $this->assertContains($forged->getStatusCode(), [419, 422]);
-        $posted = $this->request('POST', '/rooms/'.$this->room.'/messages', ['message' => ['body' => '<div>Bob says hi</div>', 'client_message_id' => 'bob-1'], 'authenticity_token' => $bobToken], $bobCookies);
+        $posted = $this->request('POST', '/rooms/'.$this->room.'/messages', ['message' => ['body' => '<div>Bob says hi</div>', 'client_message_id' => 'bob-1']], $bobCookies);
         $this->assertSame(200, $posted->getStatusCode(), (string) $posted->getContent());
         $this->assertStringContainsString('turbo-stream', (string) $posted->getContent());
         $this->assertStringContainsString('Bob says hi', (string) $posted->getContent());
         $creator = (new \PDO('sqlite:'.$this->dir.'/production.sqlite3'))->query("SELECT creator_id FROM messages WHERE client_message_id = 'bob-1'")->fetchColumn();
         $this->assertSame($bob['id'], (int) $creator);
 
-        // 7. Back to Alice: still Alice, and her session cookie still carries her own token.
+        // Back to Alice: her identity remains isolated from Bob.
         $again = $this->request('GET', '/rooms/'.$this->room, [], $aliceCookies);
         $this->assertCurrentUser($again, $alice);
-        $this->assertSame($aliceToken, $this->csrfToken($again));
+        $this->assertTokenless($again);
         $this->assertStringContainsString('Bob says hi', (string) $again->getContent());
     }
 
@@ -202,9 +201,9 @@ final class OctaneWorkerIsolationTest extends TestCase
         $login = $this->request('GET', '/session/new');
         $cookies = $this->cookies($login);
         $this->assertArrayHasKey('_campfire_session', $cookies);
-        $token = $this->csrfToken($login);
+        $this->assertTokenless($login);
         $again = $this->request('GET', '/session/new', [], $cookies);
-        $this->assertSame($token, $this->csrfToken($again));
+        $this->assertTokenless($again);
         $this->assertArrayNotHasKey('_campfire_session', $this->cookies($again));
 
         $path = '/rooms/'.$this->room;
@@ -215,29 +214,27 @@ final class OctaneWorkerIsolationTest extends TestCase
         $this->assertSame($path, $payload['return_to_after_authenticating']);
 
         $user = $this->users['alice'];
-        $signedIn = $this->request('POST', '/session', ['email_address' => $user['email'], 'password' => 'secret123456', 'authenticity_token' => $token], $cookies);
+        $signedIn = $this->request('POST', '/session', ['email_address' => $user['email'], 'password' => 'secret123456'], $cookies);
         $this->assertSame(302, $signedIn->getStatusCode());
         $this->assertStringEndsWith($path, $signedIn->headers->get('Location'));
         $this->assertArrayHasKey('_campfire_session', $this->cookies($signedIn));
         $cookies = $this->cookies($signedIn) + $cookies;
         $payload = $crypto->decryptCookie('_campfire_session', $cookies['_campfire_session']);
         $this->assertArrayNotHasKey('return_to_after_authenticating', $payload);
-        $this->assertNotSame($token, $payload['_csrf_token']);
+        $this->assertArrayNotHasKey('_csrf_token', $payload);
         $room = $this->request('GET', $path, [], $cookies);
         $this->assertSame(200, $room->getStatusCode());
         $this->assertArrayNotHasKey('_campfire_session', $this->cookies($room));
         $cookies = $this->cookies($room) + $cookies;
-        $token = $this->csrfToken($room);
-        $posted = $this->request('POST', $path.'/messages', ['message' => ['body' => 'valid cookie CSRF'], 'authenticity_token' => $token], $cookies);
+        $this->assertTokenless($room);
+        $posted = $this->request('POST', $path.'/messages', ['message' => ['body' => 'valid cookie CSRF']], $cookies);
         $this->assertSame(200, $posted->getStatusCode());
         $this->assertStringContainsString('valid cookie CSRF', (string) $posted->getContent());
 
-        $loggedOut = $this->request('DELETE', '/session', ['authenticity_token' => $token], $cookies);
+        $loggedOut = $this->request('DELETE', '/session', [], $cookies);
         $this->assertSame(302, $loggedOut->getStatusCode());
         $newCookies = $this->cookies($loggedOut);
-        $this->assertArrayHasKey('_campfire_session', $newCookies);
-        $payload = $crypto->decryptCookie('_campfire_session', $newCookies['_campfire_session']);
-        $this->assertNotSame($token, $payload['_csrf_token']);
+        $this->assertTokenless($loggedOut);
         $removed = array_values(array_filter($loggedOut->headers->getCookies(), fn ($cookie) => $cookie->getName() === 'session_token'));
         $this->assertCount(1, $removed);
         $this->assertTrue($removed[0]->isCleared());
@@ -291,9 +288,9 @@ final class OctaneWorkerIsolationTest extends TestCase
         $this->assertStringNotContainsString('original.txt</a>', (string) $after->getContent());
     }
 
-    private function request(string $method, string $uri, array $parameters = [], array $cookies = []): Response
+    private function request(string $method, string $uri, array $parameters = [], array $cookies = [], array $headers = []): Response
     {
-        $request = Request::create('http://campfire.test'.$uri, $method, $parameters, $cookies, [], ['REMOTE_ADDR' => '127.0.0.1']);
+        $request = Request::create('http://campfire.test'.$uri, $method, $parameters, $cookies, [], ['REMOTE_ADDR' => '127.0.0.1'] + $headers);
         $this->client->requests = [$request];
         $before = count($this->client->responses);
         $this->worker->run();
@@ -314,11 +311,12 @@ final class OctaneWorkerIsolationTest extends TestCase
         return $cookies;
     }
 
-    private function csrfToken(Response $response): string
+    private function assertTokenless(Response $response): void
     {
-        $this->assertSame(1, preg_match('~<meta name="csrf-token" content="([^"]+)"~', (string) $response->getContent(), $m));
-
-        return html_entity_decode($m[1]);
+        $html = (string) $response->getContent();
+        $this->assertStringNotContainsString('csrf-token', $html);
+        $this->assertStringNotContainsString('authenticity_token', $html);
+        $this->assertStringNotContainsString('name="_token"', $html);
     }
 
     private function assertCurrentUser(Response $response, array $user): void

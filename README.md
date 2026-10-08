@@ -32,8 +32,17 @@ with four hardware cores allocated to each app.
 - Authenticated room, message-list, sidebar and search HTML bodies share a bounded
   cache with message and boost fragments: 64 MiB per persistent Octane worker,
   disabled with `CAMPFIRE_RESPONSE_CACHE_MB=0`.
-  Authorization, CSRF and cookies stay fresh; SQLite commits from any writer
-  invalidate cached bodies. JSON and conditional requests retain their native paths.
+  Authorization and cookies stay fresh. Identity and finished gzip bodies are cached;
+  SQLite commits from any writer invalidate them. JSON and conditional requests retain their native paths.
+
+- Browser writes use `Sec-Fetch-Site` instead of CSRF tokens. Only GET and HEAD bypass
+  the check. Unsafe requests accept `same-origin` or `same-site` after any supplied
+  Origin matches the effective request origin; null, foreign and invalid values return 422.
+  Missing metadata is accepted only over plain HTTP without `FORCE_SSL=true`.
+  HTTPS behind a proxy requires `TRUSTED_PROXIES` to name the trusted proxy addresses.
+  Pages omit token fields and meta tags; existing token-bearing tabs and encrypted
+  Rails cookies remain usable. Authenticated bot message routes and signed disk-upload
+  capabilities retain their exemptions. The port-owned uploader requires no token tag.
 
 - The direct-room list and New Ping picker share a nested Turbo frame, keeping the
   surrounding sidebar attached while editing. Background refreshes preserve an open

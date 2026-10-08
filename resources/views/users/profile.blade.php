@@ -1,20 +1,20 @@
 @extends('layouts.app', ['title' => $user->name])
 @section('nav')
 <a href="/" class="btn">Back to chat</a>
-<form action="/session" method="post" data-controller="sessions" class="flex-item-justify-end">@csrf @method('DELETE')<input type="hidden" name="push_subscription_endpoint" data-sessions-target="pushSubscriptionEndpoint"><button class="btn" type="submit" data-action="sessions#logout:prevent">Log out</button></form>
+<form action="/session" method="post" data-controller="sessions" class="flex-item-justify-end"> @method('DELETE')<input type="hidden" name="push_subscription_endpoint" data-sessions-target="pushSubscriptionEndpoint"><button class="btn" type="submit" data-action="sessions#logout:prevent">Log out</button></form>
 @endsection
 @section('content')
 <section class="panel flex flex-column gap" style="view-transition-name: avatar-{{ $user->id }}">
 <div class="align-center center avatar__form gap" data-controller="upload-preview">
-<form action="/users/me/profile" method="post" enctype="multipart/form-data" data-controller="form">@csrf @method('PATCH')
+<form action="/users/me/profile" method="post" enctype="multipart/form-data" data-controller="form"> @method('PATCH')
 <label class="btn input--file"><input type="file" name="user[avatar]" accept="image/*" data-upload-preview-target="input" data-action="upload-preview#previewImage change->form#submit"><span>Upload avatar</span></label>
 <img src="{{ $user->avatarUrl() }}" width="300" height="300" data-upload-preview-target="image" alt="Your avatar">
 </form>
 @if(\App\Models\Attachment::where('record_type','User')->where('record_id',$user->id)->where('name','avatar')->exists())
-<form action="{{ $user->avatarUrl() }}" method="post">@csrf @method('DELETE')<button class="btn btn--negative txt-small avatar__delete-btn" type="submit">Delete avatar</button></form>
+<form action="{{ $user->avatarUrl() }}" method="post"> @method('DELETE')<button class="btn btn--negative txt-small avatar__delete-btn" type="submit">Delete avatar</button></form>
 @endif
 </div>
-<form action="/users/me/profile" method="post" class="flex flex-column gap">@csrf @method('PATCH')
+<form action="/users/me/profile" method="post" class="flex flex-column gap"> @method('PATCH')
 <label><span class="for-screen-reader">Name</span><input class="input txt-large full-width" name="user[name]" value="{{ $user->name }}" required autofocus autocomplete="name" placeholder="Enter your name"></label>
 <label><span class="for-screen-reader">Email address</span><input class="input txt-large full-width" type="email" name="user[email_address]" value="{{ $user->email_address }}" autocomplete="username" placeholder="Enter your email address"></label>
 <label><span class="for-screen-reader">Change password</span><input class="input txt-large full-width" type="password" name="user[password]" autocomplete="new-password" maxlength="72" placeholder="Change password"></label>
@@ -24,7 +24,7 @@
 <div class="margin-block pad-inline pad-block fill-shade border-radius">
 <menu class="flex flex-column gap margin-none pad">
 @foreach($user->memberships()->with('room.users')->get() as $membership)
-<li class="flex align-center gap margin-none"><a class="flex-item-grow" href="/rooms/{{ $membership->room_id }}">{{ $membership->room->displayName($user) }}</a><form action="/rooms/{{ $membership->room_id }}/involvement" method="post" data-controller="form">@csrf @method('PUT')<select class="input" name="involvement" data-action="change->form#submit" aria-label="Notifications for {{ $membership->room->displayName($user) }}">@foreach(['everything'=>'All messages','mentions'=>'@ mentions','nothing'=>'None','invisible'=>'Hide room'] as $value=>$text)@if($membership->room->type !== 'Rooms::Direct' || in_array($value,['everything','nothing']))<option value="{{ $value }}" @selected($membership->involvement === $value)>{{ $text }}</option>@endif @endforeach</select></form></li>
+<li class="flex align-center gap margin-none"><a class="flex-item-grow" href="/rooms/{{ $membership->room_id }}">{{ $membership->room->displayName($user) }}</a><form action="/rooms/{{ $membership->room_id }}/involvement" method="post" data-controller="form"> @method('PUT')<select class="input" name="involvement" data-action="change->form#submit" aria-label="Notifications for {{ $membership->room->displayName($user) }}">@foreach(['everything'=>'All messages','mentions'=>'@ mentions','nothing'=>'None','invisible'=>'Hide room'] as $value=>$text)@if($membership->room->type !== 'Rooms::Direct' || in_array($value,['everything','nothing']))<option value="{{ $value }}" @selected($membership->involvement === $value)>{{ $text }}</option>@endif @endforeach</select></form></li>
 @endforeach
 </menu>
 </div>

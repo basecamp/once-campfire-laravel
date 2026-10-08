@@ -46,7 +46,6 @@ final class SessionController extends Controller
             DB::table('sessions')->where('token', $token)->delete();
         }
         $r->session()->invalidate();
-        $r->session()->regenerateToken();
 
         return redirect('/')->withoutCookie('session_token');
     }

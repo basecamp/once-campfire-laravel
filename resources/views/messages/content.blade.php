@@ -13,7 +13,7 @@
 <div class="message__actions-menu border shadow" data-popup-target="menu">
 <div class="quick-boosts">
 @foreach(['👍'=>'Thumbs up','👏'=>'Clapping','👋'=>'Waving hand','💪'=>'Muscle','❤️'=>'Red heart','😂'=>'Face with tears of joy','🎉'=>'Party popper','🔥'=>'Fire'] as $emoji=>$label)
-<form action="/messages/{{ $message->id }}/boosts" method="post" data-turbo-frame="boosting_{{ $dom }}" data-action="popup#close">@csrf<input type="hidden" name="authenticity_token" value="{{ csrf_token() }}"><input type="hidden" name="boost[content]" value="{{ $emoji }}"><button type="submit" title="{{ $label }}" class="btn message__action-btn" data-emoji="{{ $emoji }}"><figure class="margin-none boost-character">{{ $emoji }}</figure><span class="for-screen-reader">{{ $label }}</span></button></form>
+<form action="/messages/{{ $message->id }}/boosts" method="post" data-turbo-frame="boosting_{{ $dom }}" data-action="popup#close"><input type="hidden" name="boost[content]" value="{{ $emoji }}"><button type="submit" title="{{ $label }}" class="btn message__action-btn" data-emoji="{{ $emoji }}"><figure class="margin-none boost-character">{{ $emoji }}</figure><span class="for-screen-reader">{{ $label }}</span></button></form>
 @endforeach
 <a href="/messages/{{ $message->id }}/boosts/new" class="btn message__action-btn message__boost-btn" data-turbo-frame="new_boost_{{ $dom }}" data-action="soft-keyboard#open popup#close"><img src="{{ $assets->path('boost.svg') }}" class="colorize--black" width="20" height="20" aria-hidden="true"><span class="for-screen-reader">New boost</span></a>
 </div>

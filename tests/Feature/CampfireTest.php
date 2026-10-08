@@ -50,6 +50,51 @@ final class CampfireTest extends TestCase
         $this->withUnencryptedCookie('session_token', app(RailsCrypto::class)->signCookie('session_token', $token));
     }
 
+    public function test_browser_write_routes_reject_foreign_metadata_even_with_old_tokens(): void
+    {
+        [$user, $room] = $this->fixture();
+        $this->auth($user);
+        foreach ([
+            ['POST', '/session'], ['POST', '/first_run'], ['POST', '/join/abcd-efgh-ijkl'],
+            ['PATCH', '/session/transfers/invalid'], ['POST', '/rails/active_storage/direct_uploads'],
+            ['POST', '/rooms/'.$room->id.'/messages'], ['PATCH', '/users/me/profile'],
+            ['DELETE', '/session'],
+        ] as [$method, $path]) {
+            $this->call($method, $path, ['authenticity_token' => 'old-token'], [], [], ['HTTP_SEC_FETCH_SITE' => 'cross-site'])->assertStatus(422);
+        }
+        $this->assertDatabaseCount('messages', 0);
+        $this->assertDatabaseCount('sessions', 1);
+        $this->post('/rooms/'.$room->id.'/messages', ['message' => ['body' => 'Old tab works'], 'authenticity_token' => 'old-token'], ['Sec-Fetch-Site' => 'same-origin'])->assertOk();
+        $this->assertDatabaseCount('messages', 1);
+    }
+
+    public function test_only_valid_bot_routes_and_signed_disk_capabilities_skip_browser_metadata(): void
+    {
+        [$user, $room] = $this->fixture();
+        $bot = User::create(['name' => 'Bot', 'bot_token' => 'bot-secret', 'role' => 2, 'status' => 0]);
+        Membership::create(['room_id' => $room->id, 'user_id' => $bot->id]);
+        $path = '/rooms/'.$room->id.'/'.$bot->id.'-'.$bot->bot_token.'/messages';
+        $this->call('POST', $path, [], [], [], ['CONTENT_TYPE' => 'text/plain', 'HTTP_SEC_FETCH_SITE' => 'cross-site', 'HTTP_ORIGIN' => 'null'], 'Bot message')->assertStatus(201);
+        $this->call('POST', '/rooms/'.$room->id.'/'.$bot->id.'-invalid/messages', [], [], [], ['HTTP_SEC_FETCH_SITE' => 'cross-site'])->assertStatus(422);
+        $bot->update(['status' => 1]);
+        $this->call('POST', $path, [], [], [], ['HTTP_SEC_FETCH_SITE' => 'cross-site'])->assertStatus(422);
+        $this->auth($user);
+        $this->post('/rails/active_storage/direct_uploads', [], ['Sec-Fetch-Site' => 'cross-site'])->assertStatus(422);
+        $this->call('PUT', '/rails/active_storage/disk/invalid', [], [], [], ['HTTP_SEC_FETCH_SITE' => 'cross-site'])->assertStatus(422);
+        $token = app(RailsCrypto::class)->appSign(['key' => 'absent', 'service_name' => 'local'], 'blob_token');
+        $this->call('PUT', '/rails/active_storage/disk/'.$token, [], [], [], ['HTTP_SEC_FETCH_SITE' => 'cross-site'])->assertNotFound();
+        $this->assertDatabaseCount('messages', 1);
+    }
+
+    public function test_packaged_uploader_works_without_a_csrf_meta_tag(): void
+    {
+        $manifest = json_decode(file_get_contents(public_path('assets/.manifest.json')), true);
+        $source = file_get_contents(resource_path('javascript/overrides/models/file_uploader.js'));
+        $this->assertSame($source, file_get_contents(public_path('assets/'.$manifest['models/file_uploader.js'])));
+        $this->assertStringNotContainsString('csrf-token', $source);
+        $this->assertStringContainsString('req.send(formdata)', $source);
+    }
+
     public function test_formatted_sound_commands_keep_their_plain_text_meaning(): void
     {
         [$user, $room] = $this->fixture();
