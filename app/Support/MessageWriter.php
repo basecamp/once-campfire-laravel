@@ -16,42 +16,44 @@ final class MessageWriter
 {
     public function create(Room $room, User $user, array $attributes, bool $webhooks = false): Message
     {
-        $createdBlob = null;
-        // Sanitize before the write lock. Attachment plain text resolves current user/blob rows
-        // inside the transaction; ordinary text can be prepared without database reads.
+        // Sanitizing and an upload's file IO, analysis and variants happen before the write lock.
+        // Membership and attachment plain text resolve current rows inside the transaction;
+        // ordinary text can be prepared here.
         $renderer = app(RichTextRenderer::class);
         $body = $renderer->storage($attributes['body'] ?? '');
         $plain = preg_match('~<action-text-attachment\b~i', $body) === 1 ? null : $renderer->plain($body);
-        $hasAttachment = isset($attributes['attachment']);
         $hasEmbeds = preg_match('/sgid=[\"\']/', $body) === 1;
+        $blob = null;
+        if (isset($attributes['attachment'])) {
+            $blob = app(BlobStorage::class)->prepare($attributes['attachment']);
+        }
         try {
-            return DB::transaction(function () use ($room, $user, $attributes, $webhooks, &$createdBlob, $renderer, $body, $plain, $hasAttachment, $hasEmbeds) {
-                abort_unless($room->memberships()->where('user_id', $user->id)->exists(), 403);
+            return DB::transaction(function () use ($room, $user, $attributes, $webhooks, $blob, $renderer, $body, $plain, $hasEmbeds) {
+                abort_unless(DB::table('memberships')->where('room_id', $room->id)->where('user_id', $user->id)->exists(), 403);
                 $plain ??= $renderer->plain($body);
-                $message = $room->messages()->create(['creator_id' => $user->id, 'client_message_id' => $attributes['client_message_id'] ?? (string) Str::uuid()]);
-                if ($hasAttachment) {
-                    $blob = app(BlobStorage::class)->attach($message, $attributes['attachment']);
-                    if ($attributes['attachment'] instanceof UploadedFile) {
-                        $createdBlob = $blob;
-                    }
+                // Plain inserts with one timestamp: the rows Eloquent's create() and Message::$touches
+                // (Rails' belongs_to :room, touch: true) write, without model events or a room reload.
+                $now = (new Message)->freshTimestampString();
+                $row = ['room_id' => $room->id, 'creator_id' => $user->id, 'client_message_id' => $attributes['client_message_id'] ?? (string) Str::uuid(), 'created_at' => $now, 'updated_at' => $now];
+                $message = (new Message)->newFromBuilder($row + ['id' => DB::table('messages')->insertGetId($row)])->setRelation('room', $room);
+                DB::table('rooms')->where('id', $room->id)->update(['updated_at' => $now]);
+                if ($blob) {
+                    app(BlobStorage::class)->attach($message, $blob);
                 }
                 // A new message has no rich text, embeds or index row yet: insert directly.
-                $richText = RichText::create(['record_id' => $message->id, 'record_type' => 'Message', 'name' => 'body', 'body' => $body]);
+                $row = ['record_id' => $message->id, 'record_type' => 'Message', 'name' => 'body', 'body' => $body, 'created_at' => $now, 'updated_at' => $now];
+                $richText = (new RichText)->newFromBuilder($row + ['id' => DB::table('action_text_rich_texts')->insertGetId($row)]);
                 $message->setRelation('richText', $richText);
                 if ($hasEmbeds) {
                     $this->embeds($richText, $body);
                 }
-                if ($hasAttachment && trim($plain) === '') {
-                    $filename = $message->attachment()->with('blob')->first()?->blob?->filename;
-                    if ($filename) {
-                        $plain = $filename;
-                    }
+                if ($blob?->filename && trim($plain) === '') {
+                    $plain = $blob->filename;
                 }
-                $room->touch();
                 DB::insert('INSERT INTO message_search_index(rowid,body) VALUES(?,?)', [$message->id, $plain]);
                 // Shared rooms keep their first unread timestamp; directs refresh sidebar recency.
                 // Matches the unread policy adopted in Rails PR #336.
-                $unread = $room->memberships()->where('user_id', '!=', $user->id)->where('involvement', '!=', 'invisible')->where(fn ($q) => $q->whereNull('connected_at')->orWhere('connected_at', '<', now()->subMinute()));
+                $unread = DB::table('memberships')->where('room_id', $room->id)->where('user_id', '!=', $user->id)->where('involvement', '!=', 'invisible')->where(fn ($q) => $q->whereNull('connected_at')->orWhere('connected_at', '<', now()->subMinute()));
                 if (! $room->isDirect()) {
                     $unread->whereNull('unread_at');
                 }
@@ -65,24 +67,20 @@ final class MessageWriter
                 return $message;
             });
         } catch (\Throwable $error) {
-            if ($createdBlob && ! Blob::find($createdBlob->id)) {
-                app(BlobStorage::class)->deleteFiles($createdBlob);
-            }
+            $this->discardUpload($attributes, $blob);
             throw $error;
         }
     }
 
     public function update(Message $message, array $attributes): void
     {
-        $createdBlob = null;
+        // As in create(): the upload's file work happens before the write lock.
+        $blob = isset($attributes['attachment']) ? app(BlobStorage::class)->prepare($attributes['attachment']) : null;
         try {
-            DB::transaction(function () use ($message, $attributes, &$createdBlob) {
-                if (isset($attributes['attachment'])) {
+            DB::transaction(function () use ($message, $attributes, $blob) {
+                if ($blob) {
                     $oldBlob = $message->attachment()->with('blob')->first()?->blob;
-                    $blob = app(BlobStorage::class)->attach($message, $attributes['attachment']);
-                    if ($attributes['attachment'] instanceof UploadedFile) {
-                        $createdBlob = $blob;
-                    }
+                    app(BlobStorage::class)->attach($message, $blob);
                     if ($oldBlob && $oldBlob->id !== $blob->id) {
                         DB::afterCommit(fn () => app(BlobStorage::class)->purgeUnreferenced($oldBlob));
                     }
@@ -92,10 +90,16 @@ final class MessageWriter
                 $message->room->touch();
             });
         } catch (\Throwable $error) {
-            if ($createdBlob && ! Blob::find($createdBlob->id)) {
-                app(BlobStorage::class)->deleteFiles($createdBlob);
-            }
+            $this->discardUpload($attributes, $blob);
             throw $error;
+        }
+    }
+
+    /** A prepared upload whose row did not commit leaves no files behind. */
+    private function discardUpload(array $attributes, ?Blob $blob): void
+    {
+        if ($blob && $attributes['attachment'] instanceof UploadedFile && ! Blob::where('key', $blob->key)->exists()) {
+            app(BlobStorage::class)->deleteFiles($blob);
         }
     }
 

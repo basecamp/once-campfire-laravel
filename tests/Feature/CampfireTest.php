@@ -20,6 +20,8 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Route;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Symfony\Component\Process\Process;
 use Tests\TestCase;
 use Workerman\Connection\TcpConnection;
@@ -754,5 +756,122 @@ PHP;
         $quiet->assertCookieMissing($name);
         $quiet->assertCookieMissing('last_room');
         $this->assertSame(serialize($fresh), file_get_contents($file));
+    }
+
+    public function test_flash_data_shows_once_and_is_persisted_as_removed(): void
+    {
+        [$user, $room] = $this->fixture();
+        $this->auth($user);
+        $directory = storage_path('framework/testing/session-flash-'.bin2hex(random_bytes(4)));
+        mkdir($directory, 0755, true);
+        $this->beforeApplicationDestroyed(fn () => (new Process(['rm', '-rf', $directory]))->mustRun());
+        config(['session.driver' => 'file', 'session.files' => $directory, 'session.lottery' => [0, 100]]);
+        $path = '/rooms/'.$room->id;
+        Route::middleware('web')->get('/testing/flash', function () use ($path) {
+            session()->flash('notice', 'Flash shown once');
+
+            return redirect($path);
+        });
+
+        $name = config('session.cookie');
+        $sessionId = $this->get($path)->assertOk()->getCookie($name)->getValue();
+        $file = $directory.'/'.$sessionId;
+        $visit = fn (string $uri, array $headers = []) => $this->withCookie($name, $sessionId)->withCookie('last_room', (string) $room->id)->get($uri, $headers);
+
+        // As an XHR, the flash request leaves the stored previous URL alone: flash aging is then the
+        // only change the next request can make to the session.
+        $visit('/testing/flash', ['X-Requested-With' => 'XMLHttpRequest'])->assertRedirect($path);
+        $flashed = unserialize(file_get_contents($file));
+        $this->assertSame('Flash shown once', $flashed['notice']);
+        $this->assertSame(['old' => ['notice'], 'new' => []], $flashed['_flash']);
+
+        // Store::save() ages flash data, so the request that shows it must save the session.
+        $shown = $visit($path)->assertOk()->assertSee('Flash shown once');
+        $shown->assertCookieMissing($name);
+        $aged = unserialize(file_get_contents($file));
+        $this->assertArrayNotHasKey('notice', $aged);
+        $this->assertSame(['old' => [], 'new' => []], $aged['_flash']);
+        $this->assertSame($flashed['_previous'], $aged['_previous']);
+
+        $stored = file_get_contents($file);
+        $visit($path)->assertOk()->assertDontSee('Flash shown once')->assertCookieMissing($name);
+        $this->assertSame($stored, file_get_contents($file));
+    }
+
+    public function test_failed_post_transaction_after_prepared_upload_leaves_no_rows_or_files(): void
+    {
+        [$user, $room] = $this->fixture();
+        $directory = storage_path('framework/testing/prepared-'.bin2hex(random_bytes(6)));
+        mkdir($directory.'/source', 0755, true);
+        config(['campfire.files' => $directory.'/files']);
+        $source = $directory.'/source/pixel.png';
+        file_put_contents($source, base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aY2kAAAAASUVORK5CYII='));
+        try {
+            // Fail the message insert (before the blob row) and the rich text insert (after it).
+            $failOn = null;
+            $prepared = null;
+            DB::connection()->beforeExecuting(function (string $query) use (&$failOn, &$prepared, $directory) {
+                if ($failOn && str_starts_with($query, 'insert into "'.$failOn.'"')) {
+                    $failOn = null;
+                    $prepared = [
+                        'blobs' => DB::table('active_storage_blobs')->count(),
+                        'files' => count(glob($directory.'/files/[0-9a-f][0-9a-f]/[0-9a-f][0-9a-f]/*')),
+                        'variants' => count(glob($directory.'/files/variants/*/*.png')),
+                    ];
+                    throw new \RuntimeException('Transaction failure');
+                }
+            });
+            foreach (['messages', 'action_text_rich_texts'] as $table) {
+                $failOn = $table;
+                try {
+                    app(MessageWriter::class)->create($room, $user, ['body' => '', 'attachment' => new UploadedFile($source, 'pixel.png', 'image/png', null, true)]);
+                    $this->fail('The transaction failure must propagate');
+                } catch (\RuntimeException $error) {
+                    $this->assertSame('Transaction failure', $error->getMessage());
+                }
+                // The upload and its variant were ready before the write transaction inserted anything.
+                $this->assertSame(1, $prepared['files'], $table);
+                $this->assertSame(1, $prepared['variants'], $table);
+                $this->assertSame($table === 'messages' ? 0 : 1, $prepared['blobs'], $table);
+                $this->assertDatabaseCount('messages', 0);
+                $this->assertDatabaseCount('active_storage_blobs', 0);
+                $this->assertDatabaseCount('active_storage_attachments', 0);
+                $this->assertSame([], glob($directory.'/files/[0-9a-f][0-9a-f]/[0-9a-f][0-9a-f]/*'), $table);
+                $this->assertSame([], glob($directory.'/files/variants/*'), $table);
+                Queue::assertNothingPushed();
+            }
+            $this->assertFileExists($source);
+        } finally {
+            (new Process(['rm', '-rf', $directory]))->mustRun();
+        }
+    }
+
+    public function test_membership_revoked_before_the_write_transaction_rejects_the_post_and_discards_the_upload(): void
+    {
+        [$user, $room] = $this->fixture();
+        $directory = storage_path('framework/testing/revoked-'.bin2hex(random_bytes(6)));
+        mkdir($directory.'/source', 0755, true);
+        config(['campfire.files' => $directory.'/files']);
+        $source = $directory.'/source/pixel.png';
+        file_put_contents($source, base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aY2kAAAAASUVORK5CYII='));
+        try {
+            // The controller has found the room; the membership goes away just before BEGIN.
+            DB::connection()->beforeStartingTransaction(fn () => $room->memberships()->where('user_id', $user->id)->delete());
+            try {
+                app(MessageWriter::class)->create($room, $user, ['body' => '<p>Revoked</p>', 'attachment' => new UploadedFile($source, 'pixel.png', 'image/png', null, true)]);
+                $this->fail('A revoked membership must not post.');
+            } catch (HttpException $error) {
+                $this->assertSame(403, $error->getStatusCode());
+            }
+            $this->assertDatabaseCount('messages', 0);
+            $this->assertDatabaseCount('action_text_rich_texts', 0);
+            $this->assertDatabaseCount('active_storage_blobs', 0);
+            $this->assertDatabaseCount('active_storage_attachments', 0);
+            $this->assertSame([], glob($directory.'/files/[0-9a-f][0-9a-f]/[0-9a-f][0-9a-f]/*'));
+            $this->assertSame([], glob($directory.'/files/variants/*'));
+            Queue::assertNothingPushed();
+        } finally {
+            (new Process(['rm', '-rf', $directory]))->mustRun();
+        }
     }
 }

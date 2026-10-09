@@ -8,14 +8,19 @@ use App\Http\Middleware\StartSession;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Foundation\Http\Middleware\PreventRequestForgery;
+use Illuminate\Foundation\Http\Middleware\PreventRequestsDuringMaintenance;
+use Illuminate\Http\Middleware\HandleCors;
+use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Session\Middleware\StartSession as BaseStartSession;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(web: __DIR__.'/../routes/web.php', commands: __DIR__.'/../routes/console.php')
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->encryptCookies(except: ['session_token', '_campfire_session']);
+        // Campfire has no CORS routes, maintenance mode or route model binding.
+        $middleware->remove([HandleCors::class, PreventRequestsDuringMaintenance::class]);
         $middleware->append(FetchMetadata::class);
-        $middleware->web(remove: [PreventRequestForgery::class], append: [RailsSession::class], replace: [BaseStartSession::class => StartSession::class]);
+        $middleware->web(remove: [PreventRequestForgery::class, SubstituteBindings::class], append: [RailsSession::class], replace: [BaseStartSession::class => StartSession::class]);
         if ($proxies = env('TRUSTED_PROXIES')) {
             $middleware->trustProxies(at: explode(',', $proxies));
         }
